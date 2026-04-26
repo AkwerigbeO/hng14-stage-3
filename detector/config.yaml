@@ -1,0 +1,9 @@
+logging:
+  log_file_path: "/var/log/nginx/hng-access.log"
+  audit_log_path: "audit.log"
+security:
+  default_ban_time: 10
+  backoff_multiplier: 2
+thresholds:
+  z_score_limit: 3.0
+  rate_multiplier: 5

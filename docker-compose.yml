@@ -1,8 +1,4 @@
-version: '3.8'
-
-volumes:
-  HNG-nginx-logs:
-    name: HNG-nginx-logs
+version: "3.8"
 
 services:
   # --- THE BOUNCER (Anomaly Detector, Blocker, & Unbanner) ---
@@ -41,3 +37,7 @@ services:
     image: kefaslungu/hng-nextcloud
     container_name: nextcloud
     restart: always
+
+volumes:
+  HNG-nginx-logs:
+    external: true

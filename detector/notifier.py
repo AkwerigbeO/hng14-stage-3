@@ -1,6 +1,8 @@
-import requests
+import os
 import json
-import config
+import requests
+
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 
 def send_slack_alert(ip, rate, z_score, duration):
     """
@@ -25,7 +27,7 @@ def send_slack_alert(ip, rate, z_score, duration):
 
     try:
         response = requests.post(
-            config.SLACK_WEBHOOK_URL, 
+            SLACK_WEBHOOK_URL, 
             data=json.dumps(payload),
             headers={'Content-Type': 'application/json'}
         )

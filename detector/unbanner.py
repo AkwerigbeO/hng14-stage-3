@@ -1,15 +1,19 @@
-
+import os
+import yaml
 import time
 import datetime
 import subprocess
-import config
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+    conf = yaml.safe_load(f)
 
 def run_unbanner():
     print("⏲️ Unbanner Service Started...")
     while True:
         time.sleep(60)
         try:
-            with open(config.AUDIT_LOG_PATH, "r") as f:
+            with open(AUDIT_LOG_PATH, "r") as f:
                 lines = f.readlines()
 
             bans = {}
@@ -52,13 +56,13 @@ def run_unbanner():
                     try:
                         subprocess.run(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"], check=True)
                         unban_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        with open(config.AUDIT_LOG_PATH, "a") as f:
+                        with open(AUDIT_LOG_PATH, "a") as f:
                             f.write(f"{unban_time} | ACTION: {ip} | UNBAN\n")
                         print(f"✅ Successfully unbanned {ip}")
                     except subprocess.CalledProcessError:
                         # Rule might have been deleted manually, that's fine
                         unban_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        with open(config.AUDIT_LOG_PATH, "a") as f:
+                        with open(AUDIT_LOG_PATH, "a") as f:
                             f.write(f"{unban_time} | ACTION: {ip} | UNBAN\n")
 
         except FileNotFoundError:

@@ -1,9 +1,14 @@
+import os
+import yaml
 import json
 import time
 import math
 from collections import deque
-import config
 from datetime import datetime
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+    conf = yaml.safe_load(f)
 
 class AnomalyDetector:
     def __init__(self):
@@ -92,7 +97,7 @@ class AnomalyDetector:
             try:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 log_entry = f"{timestamp} | ACTION: SYSTEM | baseline_recalc | mean: {self.baseline_mean:.2f} | stddev: {self.baseline_stddev:.2f}\n"
-                with open(config.AUDIT_LOG_PATH, "a") as f:
+                with open(AUDIT_LOG_PATH, "a") as f:
                     f.write(log_entry)
             except Exception as e:
                 print(f"⚠️ Could not write baseline to audit log: {e}")

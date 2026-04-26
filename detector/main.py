@@ -1,18 +1,29 @@
 import time
 import threading
 import subprocess
-import config
+import os
+import yaml
+
 from detector import AnomalyDetector
 from blocker import ban_ip
 from unbanner import run_unbanner
 from notifier import send_slack_alert
-import dashboard # Your new dashboard.py file
+import dashboard
 
 
-WHITELIST = config.WHITELIST
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+    conf = yaml.safe_load(f)
 
-# Debounce timer to prevent Slack spam during a global DDoS
-last_global_alert_time = 0 
+LOG_FILE_PATH = conf['logging']['log_file_path']
+AUDIT_LOG_PATH = conf['logging']['audit_log_path']
+
+# Build Whitelist from environment variables
+HOME_IP = os.environ.get("HOME_IP", "127.0.0.1")
+WHITELIST = ["127.0.0.1", HOME_IP]
+
+# Debounce timer
+last_global_alert_time = 0
 
 def tail_f(filename):
     """Streams the Nginx log file in real-time."""
@@ -29,7 +40,7 @@ def update_dashboard_stats(detector_obj):
     # Read banned IPs directly from the audit log to keep the UI honest
     banned_list = []
     try:
-        with open(config.AUDIT_LOG_PATH, "r") as f:
+        with open(AUDIT_LOG_PATH, "r") as f:
             lines = f.readlines()
             for line in lines:
                 if " | BAN" in line:
@@ -59,7 +70,7 @@ def run_engine():
     
     # 3. Initialize the detector and log stream
     detector = AnomalyDetector()
-    log_stream = tail_f(config.LOG_FILE_PATH)
+    log_stream = tail_f(LOG_FILE_PATH)
 
     while True:
         line = log_stream.stdout.readline()
@@ -101,7 +112,7 @@ def run_engine():
             
             # HNG Requirement: Auto-Unban backoff schedule (10 min, 30 min, 2 hours)
             try:
-                with open(config.AUDIT_LOG_PATH, "r") as f:
+                with open(AUDIT_LOG_PATH, "r") as f:
                     ban_count = f.read().count(f"ACTION: {ip} | BAN")
             except FileNotFoundError:
                 ban_count = 0
@@ -119,3 +130,6 @@ def run_engine():
             if ban_ip(ip, new_duration):
                 send_slack_alert(ip, rate, z_score, new_duration)
                 update_dashboard_stats(detector) # Force UI update immediately so the ban shows up
+
+if __name__ == "__main__":
+    run_engine()

@@ -1,6 +1,11 @@
+import os
+import yaml
 import subprocess
 import datetime
-import config
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+    conf = yaml.safe_load(f)
 
 def ban_ip(ip, duration):
     """
@@ -16,7 +21,7 @@ def ban_ip(ip, duration):
         ban_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"{ban_time} | ACTION: {ip} | BAN | DURATION: {duration}m\n"
         
-        with open(config.AUDIT_LOG_PATH, "a") as f:
+        with open(AUDIT_LOG_PATH, "a") as f:
             f.write(log_entry)
             
         print(f"✅ Successfully banned {ip} for {duration} minutes.")
