@@ -1,0 +1,53 @@
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+
+    # --- 1. LOGGING SETUP ---
+    # This format turns standard logs into JSON so our Python script can read it easily.
+    log_format json_analytics escape=json '{'
+        '"timestamp":"$time_iso8601",'
+        '"source_ip":"$remote_addr",'
+        '"request_method":"$request_method",'
+        '"request_uri":"$request_uri",'
+        '"status":"$status",'
+        '"request_time":"$request_time",'
+        '"body_bytes_sent":"$body_bytes_sent",'
+        '"http_user_agent":"$http_user_agent"'
+    '}';
+
+    # --- 2. REAL IP CONFIGURATION ---
+    # Without this, all logs will show the Docker Gateway (172.18.0.1)
+    set_real_ip_from  172.16.0.0/12;  # Trust the Docker internal network
+    set_real_ip_from  10.0.0.0/8;      # Trust common VPC internal ranges
+    real_ip_header    X-Forwarded-For; # Get the IP from this header
+    real_ip_recursive on;              # Filter out the trusted IPs to find the user
+
+    server {
+        listen 80;
+        server_name _; # Replace with your domain if you have one
+
+        # --- 3. LOGGING PATHS ---
+        access_log /var/log/nginx/hng-access.log json_analytics;
+        error_log  /var/log/nginx/error.log warn;
+
+        # --- 4. PROXY TO NEXTCLOUD ---
+        location / {
+            proxy_pass http://nextcloud:80;
+            
+            # These headers pass the REAL user info to Nextcloud
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # Timeouts (Useful for large Nextcloud uploads)
+            proxy_read_timeout 90;
+            proxy_connect_timeout 90;
+            proxy_send_timeout 90;
+        }
+    }
+}

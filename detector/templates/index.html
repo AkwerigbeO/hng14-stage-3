@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HNG Stage 3 Metrics</title>
+    <style>
+        body { font-family: sans-serif; background: #1a1a1a; color: #eee; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+        .card { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #007bff; }
+        h2 { color: #007bff; margin-top: 0; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #444; }
+        .banned { color: #ff4d4d; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Security Engine Dashboard</h1>
+    <p>Uptime: <span id="uptime">{{ uptime }}</span></p>
+
+    <div class="grid">
+        <div class="card">
+            <h2>System</h2>
+            <p>CPU: <span id="cpu">0</span>%</p>
+            <p>RAM: <span id="memory">0</span>%</p>
+        </div>
+        <div class="card">
+            <h2>Global Traffic</h2>
+            <p>Current RPS: <span id="rps">0</span></p>
+            <p>Baseline Mean: <span id="mean">0</span></p>
+        </div>
+        <div class="card">
+            <h2>Stats</h2>
+            <p>Banned IPs: <span id="banned-count" class="banned">0</span></p>
+            <p>Z-Score Threshold: 3.0</p>
+        </div>
+    </div>
+
+    <div class="grid" style="margin-top: 20px;">
+        <div class="card" style="grid-column: span 2;">
+            <h2>Top 10 Source IPs (Last 60s)</h2>
+            <table id="top-ips">
+                <tr><th>IP Address</th><th>Requests</th></tr>
+            </table>
+        </div>
+        <div class="card">
+            <h2>Currently Banned</h2>
+            <ul id="banned-list" class="banned"></ul>
+        </div>
+    </div>
+
+    <script>
+        function updateStats() {
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('cpu').innerText = data.cpu;
+                    document.getElementById('memory').innerText = data.memory;
+                    document.getElementById('rps').innerText = data.global_rps.toFixed(2);
+                    document.getElementById('mean').innerText = data.mean;
+                    document.getElementById('banned-count').innerText = data.banned_count;
+
+                    // Update Top IPs Table
+                    const ipTable = document.getElementById('top-ips');
+                    ipTable.innerHTML = '<tr><th>IP Address</th><th>Requests</th></tr>';
+                    data.top_ips.forEach(item => {
+                        ipTable.innerHTML += `<tr><td>${item.ip}</td><td>${item.count}</td></tr>`;
+                    });
+
+                    // Update Banned List
+                    const bannedList = document.getElementById('banned-list');
+                    bannedList.innerHTML = '';
+                    data.banned_ips.forEach(ip => {
+                        bannedList.innerHTML += `<li>${ip}</li>`;
+                    });
+                });
+        }
+
+        // Refresh every 3 seconds as required
+        setInterval(updateStats, 3000);
+        updateStats(); // Initial call
+    </script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Secrets
+.env
+
+# Python caching
+__pycache__/
+*.pyc
+0000
+# Logs 
+detector/audit.log

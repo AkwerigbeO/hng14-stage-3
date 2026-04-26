@@ -1,0 +1,5 @@
+flask
+psutil
+numpy
+requests
+pyyaml
