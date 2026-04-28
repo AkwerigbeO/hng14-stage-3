@@ -14,6 +14,7 @@ with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
 AUDIT_LOG_PATH = conf['logging']['audit_log_path']
 Z_SCORE_LIMIT = conf['thresholds']['z_score_limit']
 RATE_MULTIPLIER = conf['thresholds']['rate_multiplier']
+BASELINE_STATE_PATH = os.path.join(BASE_DIR, 'baseline_data.json')
 
 class AnomalyDetector:
     def __init__(self):
@@ -35,6 +36,34 @@ class AnomalyDetector:
         
         self.last_recalc_time = time.time()
 
+    def load_state(self):
+        """Restore persisted hourly baseline data from disk (crash recovery)."""
+        try:
+            if os.path.exists(BASELINE_STATE_PATH):
+                with open(BASELINE_STATE_PATH, 'r') as f:
+                    state = json.load(f)
+                for hour_str, values in state.get('hourly_rps', {}).items():
+                    self.hourly_rps[int(hour_str)] = values
+                for hour_str, values in state.get('hourly_errors', {}).items():
+                    self.hourly_errors[int(hour_str)] = values
+                # Immediately compute a baseline from the loaded data
+                self.calculate_baseline()
+                print(f"📊 Loaded baseline state: {len(self.hourly_rps)} hour slots, mean={self.baseline_mean:.2f}")
+        except Exception as e:
+            print(f"⚠️ Could not load baseline state: {e}")
+
+    def save_state(self):
+        """Persist hourly baseline data to disk so restarts don't lose memory."""
+        try:
+            state = {
+                'hourly_rps': {str(k): v[-3600:] for k, v in self.hourly_rps.items() if v},
+                'hourly_errors': {str(k): v[-3600:] for k, v in self.hourly_errors.items() if v},
+            }
+            with open(BASELINE_STATE_PATH, 'w') as f:
+                json.dump(state, f)
+        except Exception as e:
+            print(f"⚠️ Could not save baseline state: {e}")
+
     def log_baseline(self, hour):
         """Writes baseline updates to the audit log."""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -46,22 +75,44 @@ class AnomalyDetector:
             print(f"⚠️ Could not write baseline to audit log: {e}")
 
     def calculate_baseline(self):
-        """Recalculates the mean and standard deviation for the current hour."""
+        """Recalculates the mean and standard deviation using multi-hour data.
+        
+        Strategy:
+        1. Merge data from the CURRENT hour and PREVIOUS hour (two hourly slots).
+        2. If combined data has >= 2 samples, compute the baseline (fast warm-up).
+        3. If no hourly data at all, fall back to a global estimate from all hours.
+        This ensures the baseline is never stuck at 0.00 for long.
+        """
         current_hour = datetime.datetime.now().hour
+        prev_hour = (current_hour - 1) % 24
         
-        # Prefer the current hour's data if we have at least 10 data points
-        rps_data = self.hourly_rps[current_hour]
-        err_data = self.hourly_errors[current_hour]
+        # Merge current + previous hour data (multi-hour awareness)
+        rps_data = list(self.hourly_rps.get(current_hour, []))
+        err_data = list(self.hourly_errors.get(current_hour, []))
+        rps_data += self.hourly_rps.get(prev_hour, [])
+        err_data += self.hourly_errors.get(prev_hour, [])
         
-        if len(rps_data) > 10:
+        # Fallback: if current+prev hour have nothing, use ALL available hours
+        if len(rps_data) < 2:
+            for hour in range(24):
+                if hour != current_hour and hour != prev_hour:
+                    rps_data += self.hourly_rps.get(hour, [])
+                    err_data += self.hourly_errors.get(hour, [])
+        
+        # Fast warm-up: only need 2 samples to start (was 11 before)
+        if len(rps_data) >= 2:
             self.baseline_mean = statistics.mean(rps_data)
             self.baseline_stddev = statistics.stdev(rps_data) if len(rps_data) > 1 else 1.0
-            self.error_baseline_mean = max(statistics.mean(err_data), 0.1)
+            self.error_baseline_mean = max(statistics.mean(err_data), 0.1) if err_data else 0.1
             self.log_baseline(current_hour)
             
             # Keep only the last hour of data per slot to keep it "rolling"
-            self.hourly_rps[current_hour] = rps_data[-3600:]
-            self.hourly_errors[current_hour] = err_data[-3600:]
+            self.hourly_rps[current_hour] = self.hourly_rps[current_hour][-3600:]
+            self.hourly_errors[current_hour] = self.hourly_errors[current_hour][-3600:]
+        elif len(rps_data) == 1:
+            # Even a single sample is better than 0.00
+            self.baseline_mean = rps_data[0]
+            self.baseline_stddev = 1.0
 
     def get_total_rps(self):
         now = int(time.time())
@@ -117,12 +168,13 @@ class AnomalyDetector:
             self.ip_errors[now][ip] += 1
             self.global_errors[now] += 1
 
-        # Periodically update hourly baseline
-        if time.time() - self.last_recalc_time > 60:
+        # Periodically update hourly baseline (every 30s for faster warm-up)
+        if time.time() - self.last_recalc_time > 30:
             current_hour = datetime.datetime.now().hour
             self.hourly_rps[current_hour].append(self.get_total_rps())
             self.hourly_errors[current_hour].append(self.get_global_error_rate())
             self.calculate_baseline()
+            self.save_state()
             self.last_recalc_time = time.time()
 
         # --- Detection Logic ---

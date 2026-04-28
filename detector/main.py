@@ -105,6 +105,7 @@ def run_engine():
     
     # 3. Initialize the detector and log stream
     detector = AnomalyDetector()
+    detector.load_state()  # Restore persisted baseline (survives restarts)
     log_stream = tail_f(LOG_FILE_PATH)
 
     while True:

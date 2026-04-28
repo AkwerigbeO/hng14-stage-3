@@ -13,6 +13,7 @@ services:
     volumes:
       - HNG-nginx-logs:/var/log/nginx:ro    # Shared named volume (Read-Only)
       - ./detector/audit.log:/app/audit.log # Persist ban/unban history (ensure WORKDIR is /app in your Dockerfile)
+      - ./detector/baseline_data.json:/app/baseline_data.json # Persist learned baseline across restarts
     environment:
       - PYTHONUNBUFFERED=1        # Forces real-time log output
     depends_on:
