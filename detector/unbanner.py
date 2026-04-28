@@ -5,6 +5,8 @@ import datetime
 import sys
 from blocker import unban_ip
 from notifier import send_unban_notification
+import dashboard
+from dashboard import metrics_lock
 
 # --- LOAD CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -83,11 +85,14 @@ def run_unbanner():
                         print(f"✅ Auto-Unbanned {ip} (Duration {unban_time} expired)")
                         send_unban_notification(ip)
 
-                        # Sync with UI
+                        # Sync with UI — update BOTH the in-memory set AND the dashboard dict
                         lock, banned_set = _get_banned_lock_and_set()
                         if lock and banned_set is not None:
                             with lock:
                                 banned_set.discard(ip)
+                            # Push updated list to dashboard so the API serves fresh data immediately
+                            with metrics_lock:
+                                dashboard.metrics_data["banned_ips"] = list(banned_set)
                                 
         except Exception as e:
             print(f"❌ Unbanner Error: {e}")

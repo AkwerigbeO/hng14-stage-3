@@ -602,11 +602,11 @@
         const trafficChart = new Chart(chartCtx, {
             type: 'line',
             data: {
-                labels: Array(maxDataPoints).fill(''),
+                labels: [],
                 datasets: [
                     {
                         label: 'Current RPS',
-                        data: Array(maxDataPoints).fill(0),
+                        data: [],
                         borderColor: '#388bff', // var(--accent-blue)
                         backgroundColor: 'rgba(56, 139, 255, 0.1)',
                         borderWidth: 2,
@@ -615,7 +615,7 @@
                     },
                     {
                         label: 'Baseline Mean',
-                        data: Array(maxDataPoints).fill(0),
+                        data: [],
                         borderColor: '#22d3ee', // var(--accent-cyan)
                         borderWidth: 2,
                         borderDash: [5, 5],
@@ -670,6 +670,25 @@
                     document.getElementById('stddev').innerText = (typeof stddev === 'number') ? stddev.toFixed(2) : '0.00';
 
                     document.getElementById('banned_count').innerText = data.banned_count ?? 0;
+
+                    // ── Update Live Traffic vs Baseline chart ──
+                    var now = new Date();
+                    var timeLabel = now.getHours().toString().padStart(2, '0') + ':' +
+                                    now.getMinutes().toString().padStart(2, '0') + ':' +
+                                    now.getSeconds().toString().padStart(2, '0');
+
+                    trafficChart.data.labels.push(timeLabel);
+                    trafficChart.data.datasets[0].data.push(rps);
+                    trafficChart.data.datasets[1].data.push(mean);
+
+                    // Keep only the last maxDataPoints entries
+                    if (trafficChart.data.labels.length > maxDataPoints) {
+                        trafficChart.data.labels.shift();
+                        trafficChart.data.datasets[0].data.shift();
+                        trafficChart.data.datasets[1].data.shift();
+                    }
+
+                    trafficChart.update();
 
                     // ── Top IPs table (uses {ip, count} objects) ──
                     var tableBody = document.getElementById('top_ips_body');
