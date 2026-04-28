@@ -2,6 +2,7 @@ import time
 import os
 import yaml
 import datetime
+import sys
 from blocker import unban_ip
 
 # --- LOAD CONFIGURATION ---
@@ -10,6 +11,20 @@ with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
     conf = yaml.safe_load(f)
 
 AUDIT_LOG_PATH = conf['logging']['audit_log_path']
+
+
+def _get_banned_lock_and_set():
+    """Lazily import the shared state from main.py to avoid circular imports.
+    
+    Returns (banned_lock, currently_banned) or (None, None) if main.py
+    hasn't been imported yet (e.g. when unbanner.py is run standalone).
+    """
+    try:
+        import main as main_module
+        return main_module.banned_lock, main_module.currently_banned
+    except (ImportError, AttributeError):
+        return None, None
+
 
 def run_unbanner():
     print("🔓 Unbanner service started and monitoring audit logs...")
@@ -65,6 +80,12 @@ def run_unbanner():
                 if ip not in unbanned_ips and current_time >= unban_time:
                     if unban_ip(ip):
                         print(f"✅ Auto-Unbanned {ip} (Duration expired)")
+
+                        # Remove from the shared in-memory set so the dashboard updates
+                        lock, banned_set = _get_banned_lock_and_set()
+                        if lock is not None and banned_set is not None:
+                            with lock:
+                                banned_set.discard(ip)
                     
         except Exception as e:
             print(f"❌ Critical Error in unbanner loop: {e}")

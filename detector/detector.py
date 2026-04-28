@@ -44,20 +44,34 @@ class AnomalyDetector:
             self.baseline_data = self.baseline_data[-3600:]
 
     def get_total_rps(self):
-        """Returns the current total requests per second across all IPs."""
+        """Returns the average requests per second over the last 5 seconds.
+        
+        Averaging over 5 seconds smooths out jitter and ensures the
+        dashboard always has a meaningful value, even if the Flask
+        request arrives between log bursts.
+        """
         now = int(time.time())
-        return len(self.history.get(now, []))
+        total = sum(len(self.history.get(t, [])) for t in range(now - 5, now + 1))
+        return round(total / 5.0, 2)
 
     def get_top_ips(self, n=10):
-        """Returns the top N busiest IPs in the last second."""
+        """Returns the top N busiest IPs aggregated over the last 10 seconds.
+        
+        A wider window prevents the UI from showing empty tables
+        when there is a brief pause between log lines.
+        """
         now = int(time.time())
-        counts = self.ip_counts.get(now, {})
-        return sorted(counts.items(), key=lambda x: x[1], reverse=True)[:n]
+        combined = collections.defaultdict(int)
+        for t in range(now - 10, now + 1):
+            for ip, count in self.ip_counts.get(t, {}).items():
+                combined[ip] += count
+        return sorted(combined.items(), key=lambda x: x[1], reverse=True)[:n]
 
     def process_line(self, line):
         """
         Analyzes a single log line.
         Handles both JSON and Standard Nginx formats.
+        Uses a fallback chain for IP extraction from JSON logs.
         """
         try:
             line = line.strip()
@@ -67,11 +81,24 @@ class AnomalyDetector:
             # Detect if log is JSON (Nginx JSON format)
             if line.startswith('{'):
                 log_data = json.loads(line)
-                ip = log_data.get('source_ip', 'unknown')
+                # Fallback chain: try multiple common field names
+                ip = (log_data.get('source_ip')
+                      or log_data.get('remote_addr')
+                      or log_data.get('client_ip')
+                      or '')
+                # Strip whitespace and reject empty/invalid values
+                ip = ip.strip()
+                if not ip or ip == '-':
+                    return False, None, 0, 0
             else:
                 # Standard Nginx combined format
-                ip = line.split()[0]
-        except Exception:
+                parts = line.split()
+                if not parts:
+                    return False, None, 0, 0
+                ip = parts[0].strip()
+                if not ip or ip == '-':
+                    return False, None, 0, 0
+        except (json.JSONDecodeError, Exception):
             return False, None, 0, 0
 
         now = int(time.time())
@@ -96,8 +123,8 @@ class AnomalyDetector:
         # Logic: Anomaly if Z-score is high AND rate is significantly above baseline
         is_anomaly = (z_score > Z_SCORE_LIMIT) and (ip_rate > (self.baseline_mean * RATE_MULTIPLIER))
 
-        # Clean up old history (keep only last 5 seconds to save memory)
-        old_keys = [t for t in self.history.keys() if t < now - 5]
+        # Clean up old history (keep only last 15 seconds for the wider aggregation windows)
+        old_keys = [t for t in self.history.keys() if t < now - 15]
         for t in old_keys:
             self.history.pop(t, None)
             self.ip_counts.pop(t, None)

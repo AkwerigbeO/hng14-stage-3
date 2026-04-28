@@ -9,6 +9,7 @@ from blocker import ban_ip
 from unbanner import run_unbanner
 from notifier import send_slack_alert
 import dashboard
+from dashboard import metrics_lock
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,43 +23,75 @@ AUDIT_LOG_PATH = conf['logging']['audit_log_path']
 HOME_IP = os.environ.get("HOME_IP", "127.0.0.1")
 WHITELIST = ["127.0.0.1", HOME_IP]
 
-# Debounce timer
+# ─── Banned IP Cache (prevents duplicate Slack alerts) ───
+# Maps IP -> timestamp of last alert. If an IP is already in this cache
+# and the cooldown hasn't expired, we skip the ban+alert cycle entirely.
+banned_ip_cache = {}
+ALERT_COOLDOWN_SEC = 300  # 5-minute cooldown per IP
+
+# ─── Live Banned Set (replaces audit-log scanning) ───
+# Maintained in-memory so the dashboard never needs to re-parse the audit log.
+currently_banned = set()
+banned_lock = threading.Lock()
+
+# Debounce timer for GLOBAL alerts
 last_global_alert_time = 0
+
 
 def tail_f(filename):
     """Streams the Nginx log file in real-time."""
     process = subprocess.Popen(['tail', '-F', filename], stdout=subprocess.PIPE, text=True)
     return process
 
+
 def update_dashboard_stats(detector_obj):
-    """Updates the shared dictionary in dashboard.py so the Live UI is accurate."""
-    dashboard.metrics_data["global_rps"] = detector_obj.get_total_rps()
-    dashboard.metrics_data["mean"] = detector_obj.baseline_mean
-    dashboard.metrics_data["stddev"] = detector_obj.baseline_stddev
-    dashboard.metrics_data["top_ips"] = detector_obj.get_top_ips(10)
+    """Updates the shared dictionary in dashboard.py so the Live UI is accurate.
     
-    # Read banned IPs directly from the audit log to keep the UI honest
-    banned_list = []
+    All writes are guarded by metrics_lock to prevent the Flask
+    request thread from reading a half-written state.
+    """
+    with metrics_lock:
+        dashboard.metrics_data["global_rps"] = detector_obj.get_total_rps()
+        dashboard.metrics_data["mean"] = detector_obj.baseline_mean
+        dashboard.metrics_data["stddev"] = detector_obj.baseline_stddev
+        dashboard.metrics_data["top_ips"] = detector_obj.get_top_ips(10)
+        with banned_lock:
+            dashboard.metrics_data["banned_ips"] = list(currently_banned)
+
+
+def _load_existing_bans():
+    """On startup, scan the audit log once to rebuild the currently_banned set.
+    
+    This ensures the dashboard is accurate even if the detector container
+    restarts while bans are still active.
+    """
     try:
+        if not os.path.exists(AUDIT_LOG_PATH):
+            return
         with open(AUDIT_LOG_PATH, "r") as f:
-            lines = f.readlines()
-            for line in lines:
+            for line in f:
                 if " | BAN" in line:
-                    ip = line.split(" | ")[1].replace("ACTION: ", "").strip()
-                    if ip not in banned_list:
-                        banned_list.append(ip)
+                    parts = line.strip().split(" | ")
+                    if len(parts) >= 2:
+                        ip = parts[1].replace("ACTION: ", "").strip()
+                        currently_banned.add(ip)
                 elif " | UNBAN" in line:
-                    ip = line.split(" | ")[1].replace("ACTION: ", "").strip()
-                    if ip in banned_list:
-                        banned_list.remove(ip)
-        dashboard.metrics_data["banned_ips"] = banned_list
-    except FileNotFoundError:
-        pass
+                    parts = line.strip().split(" | ")
+                    if len(parts) >= 2:
+                        ip = parts[1].replace("ACTION: ", "").strip()
+                        currently_banned.discard(ip)
+        print(f"📋 Loaded {len(currently_banned)} existing bans from audit log")
+    except Exception as e:
+        print(f"⚠️ Could not load existing bans: {e}")
+
 
 def run_engine():
     global last_global_alert_time
     print("🚀 HNG Stage 3 Anomaly Engine Starting...")
     
+    # 0. Rebuild in-memory ban state from audit log (crash recovery)
+    _load_existing_bans()
+
     # 1. Start the Unbanner in a background thread
     ub_thread = threading.Thread(target=run_unbanner, daemon=True)
     ub_thread.start()
@@ -80,6 +113,10 @@ def run_engine():
             
         # 4. Analyze the log line
         is_anomaly, ip, rate, z_score = detector.process_line(line)
+
+        # Skip lines where IP couldn't be extracted
+        if ip is None:
+            continue
         
         # 5. Keep the UI updated
         update_dashboard_stats(detector)
@@ -108,6 +145,13 @@ def run_engine():
                 # Silently ignore whitelisted IPs to avoid log spam
                 continue
 
+            current_time = time.time()
+
+            # ── Alert Fatigue Prevention ──
+            # If we already alerted for this IP within the cooldown window, skip entirely.
+            if ip in banned_ip_cache and (current_time - banned_ip_cache[ip]) < ALERT_COOLDOWN_SEC:
+                continue
+
             print(f"⚠️ IP ANOMALY DETECTED: {ip} | Rate: {rate} | Z-Score: {z_score:.2f}")
             
             # HNG Requirement: Auto-Unban backoff schedule (10 min, 30 min, 2 hours)
@@ -126,10 +170,20 @@ def run_engine():
             else:
                 new_duration = 999999 # Effectively permanent for repeat offenders
             
-            # Execute the Ban and Notify Slack
+            # Execute the Ban and Notify Slack (exactly ONCE per cooldown window)
             if ban_ip(ip, new_duration):
+                # 1. Mark this IP as recently alerted
+                banned_ip_cache[ip] = current_time
+
+                # 2. Add to the live banned set
+                with banned_lock:
+                    currently_banned.add(ip)
+
+                # 3. Send exactly one Slack notification
                 send_slack_alert(ip, rate, z_score, new_duration)
-                update_dashboard_stats(detector) # Force UI update immediately so the ban shows up
+
+                # 4. Force UI update immediately so the ban shows up
+                update_dashboard_stats(detector)
 
 if __name__ == "__main__":
     run_engine()
