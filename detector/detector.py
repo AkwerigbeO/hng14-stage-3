@@ -1,135 +1,105 @@
+import time
+import collections
+import statistics
 import os
 import yaml
+import datetime
 import json
-import time
-import math
-from collections import deque
-from datetime import datetime
 
+# --- LOAD CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
     conf = yaml.safe_load(f)
 
+AUDIT_LOG_PATH = conf['logging']['audit_log_path']
+Z_SCORE_LIMIT = conf['thresholds']['z_score_limit']
+RATE_MULTIPLIER = conf['thresholds']['rate_multiplier']
+
 class AnomalyDetector:
     def __init__(self):
-        # Sliding Windows (60-second retention)
-        self.ip_windows = {} 
-        self.global_window = deque()
-        
-        # Baseline Statistics
-        self.baseline_mean = 5.0   # Starts at 5.0 to prevent dividing by zero early on
-        self.baseline_stddev = 1.0 
-        self.last_baseline_calc = time.time()
-        
-        # 30-minute history for baseline (1800 seconds)
-        self.history_counts = deque(maxlen=1800) 
+        self.history = collections.defaultdict(list)  # {timestamp: [ip1, ip2...]}
+        self.ip_counts = collections.defaultdict(lambda: collections.defaultdict(int)) # {timestamp: {ip: count}}
+        self.baseline_data = [] # List of total RPS per second
+        self.baseline_mean = 0.0
+        self.baseline_stddev = 1.0
+        self.last_recalc_time = time.time()
 
-    def process_line(self, line):
-        """Parses a JSON log line, updates windows, and checks for anomalies."""
+    def log_baseline(self):
+        """Writes baseline updates to the audit log for Screenshot #6."""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"{timestamp} | ACTION: SYSTEM | DETAILS: baseline_recalc | Mean: {self.baseline_mean:.2f} | StdDev: {self.baseline_stddev:.2f}\n"
         try:
-            # HNG Requirement: Read Nginx JSON logs
-            log_data = json.loads(line)
-            ip = log_data.get("source_ip", "")
-            if not ip:
-                return False, "", 0, 0.0
-
-            now = time.time()
-            
-            # 1. Update Global Window
-            self.global_window.append(now)
-            
-            # 2. Update Per-IP Window
-            if ip not in self.ip_windows:
-                self.ip_windows[ip] = deque()
-            self.ip_windows[ip].append(now)
-            
-            # 3. Clean up old entries (> 60 seconds) for this specific IP
-            while self.ip_windows[ip] and self.ip_windows[ip][0] < now - 60:
-                self.ip_windows[ip].popleft()
-
-            # Rate = requests per second over the last 60 seconds
-            rate = len(self.ip_windows[ip]) / 60.0
-
-            # 4. Check if it's time to recalculate the baseline
-            self._update_baseline(now)
-
-            # 5. Anomaly Logic (Z-Score > 3.0 OR Rate > 5x Mean)
-            z_score = 0.0
-            is_anomaly = False
-            
-            if self.baseline_mean > 0:
-                # Prevent division by zero
-                safe_stddev = self.baseline_stddev if self.baseline_stddev > 0 else 1.0
-                z_score = (rate - self.baseline_mean) / safe_stddev
-                
-                if z_score > 3.0 or rate > (5 * self.baseline_mean):
-                    is_anomaly = True
-
-            return is_anomaly, ip, rate, z_score
-
-        except json.JSONDecodeError:
-            # Silently ignore lines that aren't valid JSON (like Nginx startup messages)
-            return False, "", 0, 0.0
+            with open(AUDIT_LOG_PATH, "a") as f:
+                f.write(entry)
         except Exception as e:
-            print(f"❌ Error processing line: {e}")
-            return False, "", 0, 0.0
+            print(f"⚠️ Could not write baseline to audit log: {e}")
 
-    def _update_baseline(self, now):
-        """Recalculates the mean and stddev every 60 seconds and logs it."""
-        if now - self.last_baseline_calc >= 60:
-            current_global_rps = self.get_total_rps()
-            self.history_counts.append(current_global_rps)
-            
-            if len(self.history_counts) > 0:
-                # Calculate Mean
-                self.baseline_mean = sum(self.history_counts) / len(self.history_counts)
-                
-                # Calculate Standard Deviation
-                if len(self.history_counts) > 1:
-                    variance = sum((x - self.baseline_mean) ** 2 for x in self.history_counts) / len(self.history_counts)
-                    self.baseline_stddev = math.sqrt(variance)
-                else:
-                    self.baseline_stddev = 1.0
-                    
-            self.last_baseline_calc = now
-            
-            # HNG Requirement: Audit Log must contain baseline recalculations
-            try:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                log_entry = f"{timestamp} | ACTION: SYSTEM | baseline_recalc | mean: {self.baseline_mean:.2f} | stddev: {self.baseline_stddev:.2f}\n"
-                with open(AUDIT_LOG_PATH, "a") as f:
-                    f.write(log_entry)
-            except Exception as e:
-                print(f"⚠️ Could not write baseline to audit log: {e}")
-
-    # --- DASHBOARD UI METHODS ---
+    def calculate_baseline(self):
+        """Recalculates the mean and standard deviation of traffic."""
+        if len(self.baseline_data) > 10: # Need at least 10 seconds of data
+            self.baseline_mean = statistics.mean(self.baseline_data)
+            self.baseline_stddev = statistics.stdev(self.baseline_data)
+            self.log_baseline()
+            # Keep only the last hour (3600 seconds) of data
+            self.baseline_data = self.baseline_data[-3600:]
 
     def get_total_rps(self):
-        """Returns the total global requests per second."""
-        now = time.time()
-        while self.global_window and self.global_window[0] < now - 60:
-            self.global_window.popleft()
-        return len(self.global_window) / 60.0
+        """Returns the current total requests per second across all IPs."""
+        now = int(time.time())
+        return len(self.history.get(now, []))
 
-    def get_top_ips(self, limit=10):
-        """Returns a sorted list of the top IPs for the live UI."""
-        ip_counts = []
-        now = time.time()
-        
-        # Use list() to avoid "dictionary changed size during iteration" errors
-        for ip in list(self.ip_windows.keys()):
-            window = self.ip_windows[ip]
-            
-            # Clean up old data
-            while window and window[0] < now - 60:
-                window.popleft()
-            
-            if len(window) > 0:
-                ip_counts.append({"ip": ip, "count": len(window)})
+    def get_top_ips(self, n=10):
+        """Returns the top N busiest IPs in the last second."""
+        now = int(time.time())
+        counts = self.ip_counts.get(now, {})
+        return sorted(counts.items(), key=lambda x: x[1], reverse=True)[:n]
+
+    def process_line(self, line):
+        """
+        Analyzes a single log line.
+        Handles both JSON and Standard Nginx formats.
+        """
+        try:
+            line = line.strip()
+            if not line:
+                return False, None, 0, 0
+
+            # Detect if log is JSON (Nginx JSON format)
+            if line.startswith('{'):
+                log_data = json.loads(line)
+                ip = log_data.get('source_ip', 'unknown')
             else:
-                # Remove inactive IPs to save memory
-                del self.ip_windows[ip]
-        
-        # Sort highest to lowest
-        sorted_ips = sorted(ip_counts, key=lambda x: x["count"], reverse=True)
-        return sorted_ips[:limit]
+                # Standard Nginx combined format
+                ip = line.split()[0]
+        except Exception:
+            return False, None, 0, 0
+
+        now = int(time.time())
+
+        # 2. Update tracking
+        self.history[now].append(ip)
+        self.ip_counts[now][ip] += 1
+
+        # 3. Periodically update baseline
+        if time.time() - self.last_recalc_time > 60:
+            self.baseline_data.append(self.get_total_rps())
+            self.calculate_baseline()
+            self.last_recalc_time = time.time()
+
+        # 4. Check for Anomaly
+        ip_rate = self.ip_counts[now][ip]
+
+        # Avoid division by zero
+        safe_stddev = self.baseline_stddev if self.baseline_stddev > 0 else 1.0
+        z_score = (ip_rate - self.baseline_mean) / safe_stddev
+
+        # Logic: Anomaly if Z-score is high AND rate is significantly above baseline
+        is_anomaly = (z_score > Z_SCORE_LIMIT) and (ip_rate > (self.baseline_mean * RATE_MULTIPLIER))
+
+        # Clean up old history (keep only last 5 seconds to save memory)
+        old_keys = [t for t in self.history.keys() if t < now - 5]
+        for t in old_keys:
+            self.history.pop(t, None)
+            self.ip_counts.pop(t, None)
+
+        return is_anomaly, ip, ip_rate, z_score

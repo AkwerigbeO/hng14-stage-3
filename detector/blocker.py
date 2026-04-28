@@ -1,35 +1,56 @@
-import os
-import yaml
 import subprocess
 import datetime
+import os
+import yaml
 
+# --- LOAD CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+config_path = os.path.join(BASE_DIR, 'config.yaml')
+
+with open(config_path, 'r') as f:
     conf = yaml.safe_load(f)
 
-def ban_ip(ip, duration):
+AUDIT_LOG_PATH = conf['logging']['audit_log_path']
+
+def log_event(ip, action, details):
+    """Helper to write structured events to the audit log."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"{timestamp} | ACTION: {ip} | DETAILS: {action} {details}\n"
+    with open(AUDIT_LOG_PATH, "a") as f:
+        f.write(log_entry)
+
+def ban_ip(ip, duration_min):
     """
-    Executes the iptables command to drop packets from the offending IP.
-    Records the action in the audit log for the Unbanner to track.
+    Blocks an IP using iptables and logs the event.
+    Returns True if successful.
     """
     try:
-        # We call iptables directly because the container is already 'privileged' root
-        command = ["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"]
-        subprocess.run(command, check=True)
+        # 1. Execute the system command
+        # -I INPUT inserts the rule at the top of the chain
+        subprocess.run(['iptables', '-I', 'INPUT', '-s', ip, '-j', 'DROP'], check=True)
         
-        # Log the action for the Unbanner service to pick up later
-        ban_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"{ban_time} | ACTION: {ip} | BAN | DURATION: {duration}m\n"
-        
-        with open(AUDIT_LOG_PATH, "a") as f:
-            f.write(log_entry)
-            
-        print(f"✅ Successfully banned {ip} for {duration} minutes.")
+        # 2. Log the action for your Audit-log.png
+        log_event(ip, "BAN", f"for {duration_min}m")
+        print(f"🚫 Successfully banned {ip} for {duration_min} minutes.")
         return True
-
     except subprocess.CalledProcessError as e:
-        print(f"❌ Iptables Error: {e}")
+        print(f"❌ Failed to ban {ip}: {e}")
         return False
-    except Exception as e:
-        print(f"❌ Unexpected error in blocker: {e}")
+
+def unban_ip(ip):
+    """
+    Removes the block for an IP and logs the event.
+    """
+    try:
+        # 1. Execute the system command
+        # -D INPUT deletes the specific rule
+        subprocess.run(['iptables', '-D', 'INPUT', '-s', ip, '-j', 'DROP'], check=True)
+        
+        # 2. Log the action
+        log_event(ip, "UNBAN", "Duration expired")
+        print(f"🔓 Successfully unbanned {ip}.")
+        return True
+    except subprocess.CalledProcessError as e:
+        # This often happens if the rule was already manually deleted
+        print(f"⚠️ Could not unban {ip} (Rule might not exist): {e}")
         return False

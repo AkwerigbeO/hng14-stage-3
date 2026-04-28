@@ -1,82 +1,201 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>HNG Stage 3 Metrics</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HNG Stage 3 - Anomaly Dashboard</title>
     <style>
-        body { font-family: sans-serif; background: #1a1a1a; color: #eee; padding: 20px; }
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-        .card { background: #2a2a2a; padding: 15px; border-radius: 8px; border-left: 4px solid #007bff; }
-        h2 { color: #007bff; margin-top: 0; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #444; }
-        .banned { color: #ff4d4d; }
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --accent-blue: #2196f3;
+            --text-main: #ffffff;
+            --text-dim: #b0b0b0;
+            --danger: #f44336;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid var(--accent-blue);
+        }
+
+        .card h2 {
+            margin-top: 0;
+            color: var(--accent-blue);
+            font-size: 18px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+        }
+
+        .stat-label { color: var(--text-dim); }
+        .stat-value { font-weight: bold; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th { text-align: left; color: var(--text-dim); padding: 8px; font-size: 14px; }
+        td { padding: 8px; border-top: 1px solid #333; }
+
+        .banned-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .banned-item {
+            color: var(--danger);
+            background: rgba(244, 67, 54, 0.1);
+            padding: 5px 10px;
+            border-radius: 4px;
+            margin-bottom: 5px;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
-    <h1>🚀 Security Engine Dashboard</h1>
-    <p>Uptime: <span id="uptime">{{ uptime }}</span></p>
+
+    <div class="header">
+        <h1>🚀 Security Engine Dashboard</h1>
+    </div>
 
     <div class="grid">
         <div class="card">
             <h2>System</h2>
-            <p>CPU: <span id="cpu">0</span>%</p>
-            <p>RAM: <span id="memory">0</span>%</p>
+            <div class="stat-row">
+                <span class="stat-label">CPU:</span>
+                <span id="cpu" class="stat-value">0%</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">RAM:</span>
+                <span id="memory" class="stat-value">0%</span>
+            </div>
         </div>
+
         <div class="card">
             <h2>Global Traffic</h2>
-            <p>Current RPS: <span id="rps">0</span></p>
-            <p>Baseline Mean: <span id="mean">0</span></p>
+            <div class="stat-row">
+                <span class="stat-label">Current RPS:</span>
+                <span id="global_rps" class="stat-value">0.00</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Baseline Mean:</span>
+                <span id="mean" class="stat-value">0.00</span>
+            </div>
         </div>
+
         <div class="card">
             <h2>Stats</h2>
-            <p>Banned IPs: <span id="banned-count" class="banned">0</span></p>
-            <p>Z-Score Threshold: 3.0</p>
+            <div class="stat-row">
+                <span class="stat-label">Banned IPs:</span>
+                <span id="banned_count" class="stat-value">0</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Z-Score Threshold:</span>
+                <span id="threshold" class="stat-value">3.0</span>
+            </div>
         </div>
     </div>
 
-    <div class="grid" style="margin-top: 20px;">
-        <div class="card" style="grid-column: span 2;">
+    <div class="grid">
+        <div class="card">
             <h2>Top 10 Source IPs (Last 60s)</h2>
-            <table id="top-ips">
-                <tr><th>IP Address</th><th>Requests</th></tr>
+            <table>
+                <thead>
+                    <tr>
+                        <th>IP Address</th>
+                        <th>Requests</th>
+                    </tr>
+                </thead>
+                <tbody id="top_ips_body">
+                    </tbody>
             </table>
         </div>
+
         <div class="card">
             <h2>Currently Banned</h2>
-            <ul id="banned-list" class="banned"></ul>
+            <div id="banned_list" class="banned-list">
+                </div>
         </div>
     </div>
 
     <script>
-        function updateStats() {
+        function updateDashboard() {
             fetch('/api/stats')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('cpu').innerText = data.cpu;
-                    document.getElementById('memory').innerText = data.memory;
-                    document.getElementById('rps').innerText = data.global_rps.toFixed(2);
-                    document.getElementById('mean').innerText = data.mean;
-                    document.getElementById('banned-count').innerText = data.banned_count;
+                    // Update simple text fields
+                    document.getElementById('cpu').innerText = data.cpu + '%';
+                    document.getElementById('memory').innerText = data.memory + '%';
+                    document.getElementById('global_rps').innerText = data.global_rps.toFixed(2);
+                    document.getElementById('mean').innerText = data.mean.toFixed(2);
+                    document.getElementById('banned_count').innerText = data.banned_ips.length;
 
                     // Update Top IPs Table
-                    const ipTable = document.getElementById('top-ips');
-                    ipTable.innerHTML = '<tr><th>IP Address</th><th>Requests</th></tr>';
-                    data.top_ips.forEach(item => {
-                        ipTable.innerHTML += `<tr><td>${item.ip}</td><td>${item.count}</td></tr>`;
-                    });
+                    const tableBody = document.getElementById('top_ips_body');
+                    tableBody.innerHTML = '';
+                    if (data.top_ips.length === 0) {
+                        tableBody.innerHTML = '<tr><td colspan="2" style="color:#666">No traffic detected</td></tr>';
+                    } else {
+                        data.top_ips.forEach(item => {
+                            const row = `<tr><td>${item[0]}</td><td>${item[1]}</td></tr>`;
+                            tableBody.innerHTML += row;
+                        });
+                    }
 
                     // Update Banned List
-                    const bannedList = document.getElementById('banned-list');
-                    bannedList.innerHTML = '';
-                    data.banned_ips.forEach(ip => {
-                        bannedList.innerHTML += `<li>${ip}</li>`;
-                    });
-                });
+                    const bannedDiv = document.getElementById('banned_list');
+                    bannedDiv.innerHTML = '';
+                    if (data.banned_ips.length === 0) {
+                        bannedDiv.innerHTML = '<div style="color:#666">No active bans</div>';
+                    } else {
+                        data.banned_ips.forEach(ip => {
+                            bannedDiv.innerHTML += `<div class="banned-item">${ip}</div>`;
+                        });
+                    }
+                })
+                .catch(err => console.error('Dashboard sync error:', err));
         }
 
-        // Refresh every 3 seconds as required
-        setInterval(updateStats, 3000);
-        updateStats(); // Initial call
+        // Update every 3 seconds
+        setInterval(updateDashboard, 3000);
+        // Initial load
+        updateDashboard();
     </script>
 </body>
 </html>
