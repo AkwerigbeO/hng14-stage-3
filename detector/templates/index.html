@@ -1,12 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Real-time anomaly detection dashboard for HNG Stage 3 security engine. Monitors Nginx traffic, detects anomalies, and manages IP bans.">
+    <meta name="description"
+        content="Real-time anomaly detection dashboard for HNG Stage 3 security engine. Monitors Nginx traffic, detects anomalies, and manages IP bans.">
     <title>HNG Stage 3 — Anomaly Detection Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
     <style>
         /* ─── Design Tokens ─── */
         :root {
@@ -43,7 +48,13 @@
         }
 
         /* ─── Reset & Base ─── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
         body {
             font-family: var(--font-sans);
@@ -142,8 +153,17 @@
         }
 
         @keyframes pulse {
-            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
-            50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+
+            0%,
+            100% {
+                opacity: 1;
+                box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+            }
+
+            50% {
+                opacity: 0.6;
+                box-shadow: 0 0 0 6px rgba(52, 211, 153, 0);
+            }
         }
 
         /* ─── Grid ─── */
@@ -209,10 +229,21 @@
             font-size: 16px;
         }
 
-        .metric-icon.blue { background: rgba(56, 139, 255, 0.12); }
-        .metric-icon.cyan { background: rgba(34, 211, 238, 0.12); }
-        .metric-icon.green { background: rgba(52, 211, 153, 0.12); }
-        .metric-icon.red { background: rgba(248, 113, 113, 0.12); }
+        .metric-icon.blue {
+            background: rgba(56, 139, 255, 0.12);
+        }
+
+        .metric-icon.cyan {
+            background: rgba(34, 211, 238, 0.12);
+        }
+
+        .metric-icon.green {
+            background: rgba(52, 211, 153, 0.12);
+        }
+
+        .metric-icon.red {
+            background: rgba(248, 113, 113, 0.12);
+        }
 
         .metric-value {
             font-size: 28px;
@@ -222,10 +253,21 @@
             letter-spacing: -1px;
         }
 
-        .metric-value.blue { color: var(--accent-blue); }
-        .metric-value.cyan { color: var(--accent-cyan); }
-        .metric-value.green { color: var(--accent-green); }
-        .metric-value.red { color: var(--accent-red); }
+        .metric-value.blue {
+            color: var(--accent-blue);
+        }
+
+        .metric-value.cyan {
+            color: var(--accent-cyan);
+        }
+
+        .metric-value.green {
+            color: var(--accent-green);
+        }
+
+        .metric-value.red {
+            color: var(--accent-red);
+        }
 
         .metric-footer {
             font-size: 11px;
@@ -382,230 +424,311 @@
             transition: width 0.6s ease, background 0.3s ease;
         }
 
-        .progress-fill.cpu { background: var(--gradient-header); }
-        .progress-fill.memory { background: linear-gradient(90deg, var(--accent-purple), var(--accent-cyan)); }
+        .progress-fill.cpu {
+            background: var(--gradient-header);
+        }
+
+        .progress-fill.memory {
+            background: linear-gradient(90deg, var(--accent-purple), var(--accent-cyan));
+        }
 
         /* ─── Responsive ─── */
         @media (max-width: 1024px) {
-            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
-            .panels-grid { grid-template-columns: 1fr; }
+            .metrics-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .panels-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         @media (max-width: 640px) {
-            .metrics-grid { grid-template-columns: 1fr; }
-            .header { flex-direction: column; gap: 12px; align-items: flex-start; }
-            .app-container { padding: 16px; }
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header {
+                flex-direction: column;
+                gap: 12px;
+                align-items: flex-start;
+            }
+
+            .app-container {
+                padding: 16px;
+            }
         }
     </style>
 </head>
+
 <body>
 
-<div class="app-container">
+    <div class="app-container">
 
-    <!-- ─── Header ─── -->
-    <div class="header" id="dashboard-header">
-        <div class="header-left">
-            <div class="header-icon">🛡️</div>
-            <div>
-                <h1>Security Engine Dashboard</h1>
-                <div class="header-subtitle">HNG Stage 3 — Real-Time Anomaly Detection</div>
-            </div>
-        </div>
-        <div class="live-badge" id="live-badge">
-            <div class="live-dot"></div>
-            LIVE
-        </div>
-    </div>
-
-    <!-- ─── System Resources ─── -->
-    <div class="system-bar">
-        <div class="card" id="cpu-card">
-            <div class="progress-bar-container">
-                <div class="progress-label">
-                    <span class="progress-label-name">CPU Usage</span>
-                    <span class="progress-label-value blue" id="cpu-value">0%</span>
-                </div>
-                <div class="progress-track">
-                    <div class="progress-fill cpu" id="cpu-bar" style="width: 0%"></div>
+        <!-- ─── Header ─── -->
+        <div class="header" id="dashboard-header">
+            <div class="header-left">
+                <div class="header-icon">🛡️</div>
+                <div>
+                    <h1>Security Engine Dashboard</h1>
+                    <div class="header-subtitle">HNG Stage 3 — Real-Time Anomaly Detection</div>
                 </div>
             </div>
+            <div class="live-badge" id="live-badge">
+                <div class="live-dot"></div>
+                LIVE
+            </div>
         </div>
-        <div class="card" id="memory-card">
-            <div class="progress-bar-container">
-                <div class="progress-label">
-                    <span class="progress-label-name">Memory Usage</span>
-                    <span class="progress-label-value" style="color: var(--accent-purple)" id="memory-value">0%</span>
+
+        <!-- ─── System Resources ─── -->
+        <div class="system-bar">
+            <div class="card" id="cpu-card">
+                <div class="progress-bar-container">
+                    <div class="progress-label">
+                        <span class="progress-label-name">CPU Usage</span>
+                        <span class="progress-label-value blue" id="cpu-value">0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill cpu" id="cpu-bar" style="width: 0%"></div>
+                    </div>
                 </div>
-                <div class="progress-track">
-                    <div class="progress-fill memory" id="memory-bar" style="width: 0%"></div>
+            </div>
+            <div class="card" id="memory-card">
+                <div class="progress-bar-container">
+                    <div class="progress-label">
+                        <span class="progress-label-name">Memory Usage</span>
+                        <span class="progress-label-value" style="color: var(--accent-purple)"
+                            id="memory-value">0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill memory" id="memory-bar" style="width: 0%"></div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- ─── Key Metrics ─── -->
-    <div class="metrics-grid">
-        <div class="card metric-card" id="rps-card">
-            <div class="metric-header">
-                <span class="metric-label">Current RPS</span>
-                <div class="metric-icon blue">⚡</div>
+        <!-- ─── Key Metrics ─── -->
+        <div class="metrics-grid">
+            <div class="card metric-card" id="rps-card">
+                <div class="metric-header">
+                    <span class="metric-label">Current RPS</span>
+                    <div class="metric-icon blue">⚡</div>
+                </div>
+                <div class="metric-value blue" id="global_rps">0.00</div>
+                <div class="metric-footer">Requests per second (5s avg)</div>
             </div>
-            <div class="metric-value blue" id="global_rps">0.00</div>
-            <div class="metric-footer">Requests per second (5s avg)</div>
-        </div>
 
-        <div class="card metric-card" id="mean-card">
-            <div class="metric-header">
-                <span class="metric-label">Baseline Mean</span>
-                <div class="metric-icon cyan">📊</div>
+            <div class="card metric-card" id="mean-card">
+                <div class="metric-header">
+                    <span class="metric-label">Baseline Mean</span>
+                    <div class="metric-icon cyan">📊</div>
+                </div>
+                <div class="metric-value cyan" id="mean">0.00</div>
+                <div class="metric-footer">Rolling average RPS</div>
             </div>
-            <div class="metric-value cyan" id="mean">0.00</div>
-            <div class="metric-footer">Rolling average RPS</div>
-        </div>
 
-        <div class="card metric-card" id="stddev-card">
-            <div class="metric-header">
-                <span class="metric-label">Std Deviation</span>
-                <div class="metric-icon green">📈</div>
+            <div class="card metric-card" id="stddev-card">
+                <div class="metric-header">
+                    <span class="metric-label">Std Deviation</span>
+                    <div class="metric-icon green">📈</div>
+                </div>
+                <div class="metric-value green" id="stddev">0.00</div>
+                <div class="metric-footer">Traffic variance</div>
             </div>
-            <div class="metric-value green" id="stddev">0.00</div>
-            <div class="metric-footer">Traffic variance</div>
-        </div>
 
-        <div class="card metric-card" id="banned-count-card">
-            <div class="metric-header">
-                <span class="metric-label">Banned IPs</span>
-                <div class="metric-icon red">🚫</div>
+            <div class="card metric-card" id="banned-count-card">
+                <div class="metric-header">
+                    <span class="metric-label">Banned IPs</span>
+                    <div class="metric-icon red">🚫</div>
+                </div>
+                <div class="metric-value red" id="banned_count">0</div>
+                <div class="metric-footer">Currently blocked</div>
             </div>
-            <div class="metric-value red" id="banned_count">0</div>
-            <div class="metric-footer">Currently blocked</div>
         </div>
-    </div>
-
-    <!-- ─── Panels ─── -->
-    <div class="panels-grid">
-        <!-- Top IPs Panel -->
-        <div class="card" id="top-ips-card">
+        <div class="card" style="margin-bottom: 24px;">
             <div class="panel-title">
-                <span>🔍</span> Top Source IPs (Last 10s)
+                <span>📈</span> Live Traffic vs Baseline
             </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 40px">#</th>
-                        <th>IP Address</th>
-                        <th style="text-align: right">Requests</th>
-                    </tr>
-                </thead>
-                <tbody id="top_ips_body">
-                    <tr><td colspan="3" class="no-data">Waiting for traffic…</td></tr>
-                </tbody>
-            </table>
+            <div style="position: relative; height: 300px; width: 100%;">
+                <canvas id="trafficChart"></canvas>
+            </div>
+        </div>
+        <!-- ─── Panels ─── -->
+        <div class="panels-grid">
+            <!-- Top IPs Panel -->
+            <div class="card" id="top-ips-card">
+                <div class="panel-title">
+                    <span>🔍</span> Top Source IPs (Last 10s)
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 40px">#</th>
+                            <th>IP Address</th>
+                            <th style="text-align: right">Requests</th>
+                        </tr>
+                    </thead>
+                    <tbody id="top_ips_body">
+                        <tr>
+                            <td colspan="3" class="no-data">Waiting for traffic…</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Banned IPs Panel -->
+            <div class="card" id="banned-ips-card">
+                <div class="panel-title">
+                    <span>🔒</span> Currently Banned
+                </div>
+                <div id="banned_list" class="banned-list">
+                    <div class="no-data">No active bans</div>
+                </div>
+            </div>
         </div>
 
-        <!-- Banned IPs Panel -->
-        <div class="card" id="banned-ips-card">
-            <div class="panel-title">
-                <span>🔒</span> Currently Banned
-            </div>
-            <div id="banned_list" class="banned-list">
-                <div class="no-data">No active bans</div>
-            </div>
-        </div>
     </div>
 
-</div>
+    <script>
+        /**
+         * Dashboard refresh loop.
+         * Polls /api/stats every 3 seconds and updates the DOM.
+         * Every field is null-guarded with ?? to prevent 'undefined' rendering.
+         */
+        // ─── Chart.js Setup ───
+        const maxDataPoints = 20; // How many dots to show on the graph
+        const chartCtx = document.getElementById('trafficChart').getContext('2d');
 
-<script>
-    /**
-     * Dashboard refresh loop.
-     * Polls /api/stats every 3 seconds and updates the DOM.
-     * Every field is null-guarded with ?? to prevent 'undefined' rendering.
-     */
-    function updateDashboard() {
-        fetch('/api/stats')
-            .then(function(response) {
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-                return response.json();
-            })
-            .then(function(data) {
-                // ── System resources ──
-                var cpu = data.cpu ?? 0;
-                var memory = data.memory ?? 0;
-                document.getElementById('cpu-value').innerText = cpu + '%';
-                document.getElementById('cpu-bar').style.width = Math.min(cpu, 100) + '%';
-                document.getElementById('memory-value').innerText = memory + '%';
-                document.getElementById('memory-bar').style.width = Math.min(memory, 100) + '%';
+        const trafficChart = new Chart(chartCtx, {
+            type: 'line',
+            data: {
+                labels: Array(maxDataPoints).fill(''),
+                datasets: [
+                    {
+                        label: 'Current RPS',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#388bff', // var(--accent-blue)
+                        backgroundColor: 'rgba(56, 139, 255, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true
+                    },
+                    {
+                        label: 'Baseline Mean',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#22d3ee', // var(--accent-cyan)
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        tension: 0.4,
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 }, // Prevents bouncy animation on every poll
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(99, 130, 190, 0.1)' },
+                        ticks: { color: '#94a3b8' }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#94a3b8', maxTicksLimit: 10 }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: '#f1f5f9' } }
+                }
+            }
+        });
+        function updateDashboard() {
+            fetch('/api/stats')
+                .then(function (response) {
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    return response.json();
+                })
+                .then(function (data) {
+                    // ── System resources ──
+                    var cpu = data.cpu ?? 0;
+                    var memory = data.memory ?? 0;
+                    document.getElementById('cpu-value').innerText = cpu + '%';
+                    document.getElementById('cpu-bar').style.width = Math.min(cpu, 100) + '%';
+                    document.getElementById('memory-value').innerText = memory + '%';
+                    document.getElementById('memory-bar').style.width = Math.min(memory, 100) + '%';
 
-                // ── Key metrics ──
-                var rps = data.global_rps ?? 0;
-                document.getElementById('global_rps').innerText = (typeof rps === 'number') ? rps.toFixed(2) : '0.00';
+                    // ── Key metrics ──
+                    var rps = data.global_rps ?? 0;
+                    document.getElementById('global_rps').innerText = (typeof rps === 'number') ? rps.toFixed(2) : '0.00';
 
-                var mean = data.mean ?? 0;
-                document.getElementById('mean').innerText = (typeof mean === 'number') ? mean.toFixed(2) : '0.00';
+                    var mean = data.mean ?? 0;
+                    document.getElementById('mean').innerText = (typeof mean === 'number') ? mean.toFixed(2) : '0.00';
 
-                var stddev = data.stddev ?? 0;
-                document.getElementById('stddev').innerText = (typeof stddev === 'number') ? stddev.toFixed(2) : '0.00';
+                    var stddev = data.stddev ?? 0;
+                    document.getElementById('stddev').innerText = (typeof stddev === 'number') ? stddev.toFixed(2) : '0.00';
 
-                document.getElementById('banned_count').innerText = data.banned_count ?? 0;
+                    document.getElementById('banned_count').innerText = data.banned_count ?? 0;
 
-                // ── Top IPs table (uses {ip, count} objects) ──
-                var tableBody = document.getElementById('top_ips_body');
-                tableBody.innerHTML = '';
-                var ips = data.top_ips ?? [];
+                    // ── Top IPs table (uses {ip, count} objects) ──
+                    var tableBody = document.getElementById('top_ips_body');
+                    tableBody.innerHTML = '';
+                    var ips = data.top_ips ?? [];
 
-                if (!Array.isArray(ips) || ips.length === 0) {
-                    tableBody.innerHTML = '<tr><td colspan="3" class="no-data">No traffic detected</td></tr>';
-                } else {
-                    for (var i = 0; i < ips.length; i++) {
-                        var item = ips[i];
-                        var ipAddr = 'N/A';
-                        var reqCount = 0;
+                    if (!Array.isArray(ips) || ips.length === 0) {
+                        tableBody.innerHTML = '<tr><td colspan="3" class="no-data">No traffic detected</td></tr>';
+                    } else {
+                        for (var i = 0; i < ips.length; i++) {
+                            var item = ips[i];
+                            var ipAddr = 'N/A';
+                            var reqCount = 0;
 
-                        // Handle both object format {ip, count} and legacy array [ip, count]
-                        if (item && typeof item === 'object' && !Array.isArray(item)) {
-                            ipAddr = item.ip ?? 'N/A';
-                            reqCount = item.count ?? 0;
-                        } else if (Array.isArray(item) && item.length >= 2) {
-                            ipAddr = item[0] ?? 'N/A';
-                            reqCount = item[1] ?? 0;
+                            // Handle both object format {ip, count} and legacy array [ip, count]
+                            if (item && typeof item === 'object' && !Array.isArray(item)) {
+                                ipAddr = item.ip ?? 'N/A';
+                                reqCount = item.count ?? 0;
+                            } else if (Array.isArray(item) && item.length >= 2) {
+                                ipAddr = item[0] ?? 'N/A';
+                                reqCount = item[1] ?? 0;
+                            }
+
+                            var row = document.createElement('tr');
+                            row.innerHTML =
+                                '<td class="rank-cell">' + (i + 1) + '</td>' +
+                                '<td class="ip-cell">' + ipAddr + '</td>' +
+                                '<td class="count-cell" style="text-align:right">' + reqCount + '</td>';
+                            tableBody.appendChild(row);
                         }
-
-                        var row = document.createElement('tr');
-                        row.innerHTML =
-                            '<td class="rank-cell">' + (i + 1) + '</td>' +
-                            '<td class="ip-cell">' + ipAddr + '</td>' +
-                            '<td class="count-cell" style="text-align:right">' + reqCount + '</td>';
-                        tableBody.appendChild(row);
                     }
-                }
 
-                // ── Banned IPs list ──
-                var bannedDiv = document.getElementById('banned_list');
-                bannedDiv.innerHTML = '';
-                var bans = data.banned_ips ?? [];
+                    // ── Banned IPs list ──
+                    var bannedDiv = document.getElementById('banned_list');
+                    bannedDiv.innerHTML = '';
+                    var bans = data.banned_ips ?? [];
 
-                if (!Array.isArray(bans) || bans.length === 0) {
-                    bannedDiv.innerHTML = '<div class="no-data">No active bans</div>';
-                } else {
-                    for (var j = 0; j < bans.length; j++) {
-                        var bannedIp = bans[j] ?? 'N/A';
-                        var div = document.createElement('div');
-                        div.className = 'banned-item';
-                        div.innerHTML = '<span class="banned-icon">⛔</span> ' + bannedIp;
-                        bannedDiv.appendChild(div);
+                    if (!Array.isArray(bans) || bans.length === 0) {
+                        bannedDiv.innerHTML = '<div class="no-data">No active bans</div>';
+                    } else {
+                        for (var j = 0; j < bans.length; j++) {
+                            var bannedIp = bans[j] ?? 'N/A';
+                            var div = document.createElement('div');
+                            div.className = 'banned-item';
+                            div.innerHTML = '<span class="banned-icon">⛔</span> ' + bannedIp;
+                            bannedDiv.appendChild(div);
+                        }
                     }
-                }
-            })
-            .catch(function(err) {
-                console.error('Dashboard sync error:', err);
-            });
-    }
+                })
+                .catch(function (err) {
+                    console.error('Dashboard sync error:', err);
+                });
+        }
 
-    // Poll every 3 seconds
-    setInterval(updateDashboard, 3000);
-    // Initial load
-    updateDashboard();
-</script>
+        // Poll every 3 seconds
+        setInterval(updateDashboard, 3000);
+        // Initial load
+        updateDashboard();
+    </script>
 </body>
+
 </html>
