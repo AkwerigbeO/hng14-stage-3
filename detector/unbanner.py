@@ -6,7 +6,7 @@ import sys
 from blocker import unban_ip
 from notifier import send_unban_notification
 import dashboard
-from dashboard import metrics_lock
+from dashboard import metrics_lock, currently_banned, banned_lock
 
 # --- LOAD CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,13 +15,6 @@ with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
 
 AUDIT_LOG_PATH = conf['logging']['audit_log_path']
 
-def _get_banned_lock_and_set():
-    """Lazily import the shared state from main.py to avoid circular imports."""
-    try:
-        import main as main_module
-        return main_module.banned_lock, main_module.currently_banned
-    except (ImportError, AttributeError):
-        return None, None
 
 def run_unbanner():
     print("🔓 Unbanner service started. Monitoring for expirations...")
@@ -86,13 +79,11 @@ def run_unbanner():
                         send_unban_notification(ip)
 
                         # Sync with UI — update BOTH the in-memory set AND the dashboard dict
-                        lock, banned_set = _get_banned_lock_and_set()
-                        if lock and banned_set is not None:
-                            with lock:
-                                banned_set.discard(ip)
-                            # Push updated list to dashboard so the API serves fresh data immediately
-                            with metrics_lock:
-                                dashboard.metrics_data["banned_ips"] = list(banned_set)
+                        with banned_lock:
+                            currently_banned.discard(ip)
+                        # Push updated list to dashboard so the API serves fresh data immediately
+                        with metrics_lock:
+                            dashboard.metrics_data["banned_ips"] = list(currently_banned)
                                 
         except Exception as e:
             print(f"❌ Unbanner Error: {e}")

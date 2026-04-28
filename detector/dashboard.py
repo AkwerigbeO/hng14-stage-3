@@ -5,11 +5,11 @@ import time
 from datetime import timedelta
 
 app = Flask(__name__)
-
-# ─── Thread-safe lock for shared state ───
-# All writes from the log-processing thread and reads from the
 # Flask request thread MUST be wrapped in this lock.
 metrics_lock = threading.Lock()
+
+currently_banned = set()
+banned_lock = threading.Lock()
 
 # This will be updated by your main.py loop
 metrics_data = {

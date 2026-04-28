@@ -10,7 +10,7 @@ from blocker import ban_ip
 from unbanner import run_unbanner
 from notifier import send_slack_alert
 import dashboard
-from dashboard import metrics_lock
+from dashboard import metrics_lock, currently_banned, banned_lock
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,11 +35,6 @@ ALERT_COOLDOWN_SEC = 300  # 5-minute cooldown per IP
 # Does NOT reset on unban — escalates: 10m → 30m → 2h → permanent.
 offense_counts = {}
 BACKOFF_SCHEDULE = [10, 30, 120]  # minutes per offense (4th+ = permanent)
-
-# ─── Live Banned Set (replaces audit-log scanning) ───
-# Maintained in-memory so the dashboard never needs to re-parse the audit log.
-currently_banned = set()
-banned_lock = threading.Lock()
 
 # Debounce timer for GLOBAL alerts
 last_global_alert_time = 0
