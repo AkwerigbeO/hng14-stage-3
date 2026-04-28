@@ -4,6 +4,7 @@ import yaml
 import datetime
 import sys
 from blocker import unban_ip
+from notifier import send_unban_notification
 
 # --- LOAD CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -80,6 +81,7 @@ def run_unbanner():
                 if ip not in unbanned_ips and current_time >= unban_time:
                     if unban_ip(ip):
                         print(f"✅ Auto-Unbanned {ip} (Duration expired)")
+                        send_unban_notification(ip)
 
                         # Remove from the shared in-memory set so the dashboard updates
                         lock, banned_set = _get_banned_lock_and_set()

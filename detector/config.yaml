@@ -2,8 +2,8 @@ logging:
   log_file_path: "/var/log/nginx/hng-access.log"
   audit_log_path: "audit.log"
 security:
-  default_ban_time: 10
-  backoff_multiplier: 2
+  backoff_schedule: [10, 30, 120]   # minutes: 1st=10m, 2nd=30m, 3rd=2h
+  permanent_ban_minutes: 999999     # 4th+ offense = effectively permanent
 thresholds:
   z_score_limit: 3.0
   rate_multiplier: 5

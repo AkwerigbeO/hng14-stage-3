@@ -19,15 +19,26 @@ class AnomalyDetector:
     def __init__(self):
         self.history = collections.defaultdict(list)  # {timestamp: [ip1, ip2...]}
         self.ip_counts = collections.defaultdict(lambda: collections.defaultdict(int)) # {timestamp: {ip: count}}
-        self.baseline_data = [] # List of total RPS per second
+        
+        # --- Error Tracking ---
+        self.ip_errors = collections.defaultdict(lambda: collections.defaultdict(int)) # {timestamp: {ip: error_count}}
+        self.global_errors = collections.defaultdict(int) # {timestamp: total_error_count}
+        
+        # --- Baseline Slots (Per-Hour) ---
+        # Stores RPS and Error-Rate data for each hour of the day (0-23)
+        self.hourly_rps = collections.defaultdict(list)   # {hour: [rps1, rps2...]}
+        self.hourly_errors = collections.defaultdict(list) # {hour: [err1, err2...]}
+        
         self.baseline_mean = 0.0
         self.baseline_stddev = 1.0
+        self.error_baseline_mean = 0.1 # Floor to avoid div by zero
+        
         self.last_recalc_time = time.time()
 
-    def log_baseline(self):
-        """Writes baseline updates to the audit log for Screenshot #6."""
+    def log_baseline(self, hour):
+        """Writes baseline updates to the audit log."""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = f"{timestamp} | ACTION: SYSTEM | DETAILS: baseline_recalc | Mean: {self.baseline_mean:.2f} | StdDev: {self.baseline_stddev:.2f}\n"
+        entry = f"{timestamp} | ACTION: SYSTEM | DETAILS: baseline_recalc | Hour: {hour} | RPS Mean: {self.baseline_mean:.2f} | Err Mean: {self.error_baseline_mean:.2f}\n"
         try:
             with open(AUDIT_LOG_PATH, "a") as f:
                 f.write(entry)
@@ -35,31 +46,35 @@ class AnomalyDetector:
             print(f"⚠️ Could not write baseline to audit log: {e}")
 
     def calculate_baseline(self):
-        """Recalculates the mean and standard deviation of traffic."""
-        if len(self.baseline_data) > 10: # Need at least 10 seconds of data
-            self.baseline_mean = statistics.mean(self.baseline_data)
-            self.baseline_stddev = statistics.stdev(self.baseline_data)
-            self.log_baseline()
-            # Keep only the last hour (3600 seconds) of data
-            self.baseline_data = self.baseline_data[-3600:]
+        """Recalculates the mean and standard deviation for the current hour."""
+        current_hour = datetime.datetime.now().hour
+        
+        # Prefer the current hour's data if we have at least 10 data points
+        rps_data = self.hourly_rps[current_hour]
+        err_data = self.hourly_errors[current_hour]
+        
+        if len(rps_data) > 10:
+            self.baseline_mean = statistics.mean(rps_data)
+            self.baseline_stddev = statistics.stdev(rps_data) if len(rps_data) > 1 else 1.0
+            self.error_baseline_mean = max(statistics.mean(err_data), 0.1)
+            self.log_baseline(current_hour)
+            
+            # Keep only the last hour of data per slot to keep it "rolling"
+            self.hourly_rps[current_hour] = rps_data[-3600:]
+            self.hourly_errors[current_hour] = err_data[-3600:]
 
     def get_total_rps(self):
-        """Returns the average requests per second over the last 5 seconds.
-        
-        Averaging over 5 seconds smooths out jitter and ensures the
-        dashboard always has a meaningful value, even if the Flask
-        request arrives between log bursts.
-        """
         now = int(time.time())
         total = sum(len(self.history.get(t, [])) for t in range(now - 5, now + 1))
         return round(total / 5.0, 2)
 
+    def get_global_error_rate(self):
+        """Average global errors per second over last 5s."""
+        now = int(time.time())
+        total = sum(self.global_errors.get(t, 0) for t in range(now - 5, now + 1))
+        return round(total / 5.0, 2)
+
     def get_top_ips(self, n=10):
-        """Returns the top N busiest IPs aggregated over the last 10 seconds.
-        
-        A wider window prevents the UI from showing empty tables
-        when there is a brief pause between log lines.
-        """
         now = int(time.time())
         combined = collections.defaultdict(int)
         for t in range(now - 10, now + 1):
@@ -70,63 +85,78 @@ class AnomalyDetector:
     def process_line(self, line):
         """
         Analyzes a single log line.
-        Handles both JSON and Standard Nginx formats.
-        Uses a fallback chain for IP extraction from JSON logs.
+        Supports 'Error Surge' detection and threshold tightening.
         """
         try:
             line = line.strip()
             if not line:
-                return False, None, 0, 0
+                return False, None, 0, 0, "No data"
 
-            # Detect if log is JSON (Nginx JSON format)
+            status = 200
             if line.startswith('{'):
                 log_data = json.loads(line)
-                # Fallback chain: try multiple common field names
-                ip = (log_data.get('source_ip')
-                      or log_data.get('remote_addr')
-                      or log_data.get('client_ip')
-                      or '')
-                # Strip whitespace and reject empty/invalid values
-                ip = ip.strip()
-                if not ip or ip == '-':
-                    return False, None, 0, 0
+                ip = (log_data.get('source_ip') or log_data.get('remote_addr') or log_data.get('client_ip') or '').strip()
+                status = int(log_data.get('status', 200))
             else:
-                # Standard Nginx combined format
                 parts = line.split()
-                if not parts:
-                    return False, None, 0, 0
+                if not parts: return False, None, 0, 0, "Parse error"
                 ip = parts[0].strip()
-                if not ip or ip == '-':
-                    return False, None, 0, 0
-        except (json.JSONDecodeError, Exception):
-            return False, None, 0, 0
+                # Try to find status in common Nginx combined positions
+                if len(parts) > 8: status = int(parts[8])
+
+            if not ip or ip == '-': return False, None, 0, 0, "Invalid IP"
+        except Exception:
+            return False, None, 0, 0, "Parse error"
 
         now = int(time.time())
-
-        # 2. Update tracking
         self.history[now].append(ip)
         self.ip_counts[now][ip] += 1
+        
+        # Track errors (4xx, 5xx)
+        if status >= 400:
+            self.ip_errors[now][ip] += 1
+            self.global_errors[now] += 1
 
-        # 3. Periodically update baseline
+        # Periodically update hourly baseline
         if time.time() - self.last_recalc_time > 60:
-            self.baseline_data.append(self.get_total_rps())
+            current_hour = datetime.datetime.now().hour
+            self.hourly_rps[current_hour].append(self.get_total_rps())
+            self.hourly_errors[current_hour].append(self.get_global_error_rate())
             self.calculate_baseline()
             self.last_recalc_time = time.time()
 
-        # 4. Check for Anomaly
+        # --- Detection Logic ---
         ip_rate = self.ip_counts[now][ip]
+        ip_err_rate = self.ip_errors[now][ip]
+        
+        # 1. Error Surge Check
+        # If IP error rate is 3x baseline error rate, tighten thresholds
+        is_error_surge = (ip_err_rate > (self.error_baseline_mean * 3)) and (ip_err_rate > 2)
+        effective_z_limit = Z_SCORE_LIMIT / 2.0 if is_error_surge else Z_SCORE_LIMIT
+        effective_rate_multiplier = RATE_MULTIPLIER / 2.0 if is_error_surge else RATE_MULTIPLIER
 
-        # Avoid division by zero
+        # 2. Z-Score Anomaly
         safe_stddev = self.baseline_stddev if self.baseline_stddev > 0 else 1.0
         z_score = (ip_rate - self.baseline_mean) / safe_stddev
 
-        # Logic: Anomaly if Z-score is high AND rate is significantly above baseline
-        is_anomaly = (z_score > Z_SCORE_LIMIT) and (ip_rate > (self.baseline_mean * RATE_MULTIPLIER))
+        # Flag Condition
+        condition = None
+        if z_score > effective_z_limit:
+            condition = f"Z-Score ({z_score:.2f} > {effective_z_limit})"
+        elif ip_rate > (self.baseline_mean * effective_rate_multiplier) and self.baseline_mean > 0:
+            condition = f"Rate Multiplier ({ip_rate} > {self.baseline_mean * effective_rate_multiplier:.1f})"
+        
+        if is_error_surge and condition:
+            condition = f"ERROR SURGE + {condition}"
 
-        # Clean up old history (keep only last 15 seconds for the wider aggregation windows)
+        is_anomaly = condition is not None
+
+        # Cleanup
         old_keys = [t for t in self.history.keys() if t < now - 15]
         for t in old_keys:
             self.history.pop(t, None)
             self.ip_counts.pop(t, None)
+            self.ip_errors.pop(t, None)
+            self.global_errors.pop(t, None)
 
-        return is_anomaly, ip, ip_rate, z_score
+        return is_anomaly, ip, ip_rate, z_score, condition

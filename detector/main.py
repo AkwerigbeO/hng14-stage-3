@@ -3,6 +3,7 @@ import threading
 import subprocess
 import os
 import yaml
+import datetime
 
 from detector import AnomalyDetector
 from blocker import ban_ip
@@ -28,6 +29,12 @@ WHITELIST = ["127.0.0.1", HOME_IP]
 # and the cooldown hasn't expired, we skip the ban+alert cycle entirely.
 banned_ip_cache = {}
 ALERT_COOLDOWN_SEC = 300  # 5-minute cooldown per IP
+
+# ─── Offense Tracking (for backoff schedule) ───
+# Tracks how many times each IP has been banned.
+# Does NOT reset on unban — escalates: 10m → 30m → 2h → permanent.
+offense_counts = {}
+BACKOFF_SCHEDULE = [10, 30, 120]  # minutes per offense (4th+ = permanent)
 
 # ─── Live Banned Set (replaces audit-log scanning) ───
 # Maintained in-memory so the dashboard never needs to re-parse the audit log.
@@ -60,27 +67,27 @@ def update_dashboard_stats(detector_obj):
 
 
 def _load_existing_bans():
-    """On startup, scan the audit log once to rebuild the currently_banned set.
-    
-    This ensures the dashboard is accurate even if the detector container
-    restarts while bans are still active.
+    """On startup, scan the audit log once to rebuild the currently_banned set
+    and offense_counts for correct backoff escalation.
     """
+    global offense_counts
     try:
         if not os.path.exists(AUDIT_LOG_PATH):
             return
         with open(AUDIT_LOG_PATH, "r") as f:
             for line in f:
-                if " | BAN" in line:
+                if "DETAILS: BAN" in line:
                     parts = line.strip().split(" | ")
                     if len(parts) >= 2:
                         ip = parts[1].replace("ACTION: ", "").strip()
                         currently_banned.add(ip)
-                elif " | UNBAN" in line:
+                        offense_counts[ip] = offense_counts.get(ip, 0) + 1
+                elif "DETAILS: UNBAN" in line:
                     parts = line.strip().split(" | ")
                     if len(parts) >= 2:
                         ip = parts[1].replace("ACTION: ", "").strip()
                         currently_banned.discard(ip)
-        print(f"📋 Loaded {len(currently_banned)} existing bans from audit log")
+        print(f"📋 Loaded {len(currently_banned)} existing bans, {len(offense_counts)} offense records")
     except Exception as e:
         print(f"⚠️ Could not load existing bans: {e}")
 
@@ -112,7 +119,7 @@ def run_engine():
             continue
             
         # 4. Analyze the log line
-        is_anomaly, ip, rate, z_score = detector.process_line(line)
+        is_anomaly, ip, rate, z_score, condition = detector.process_line(line)
 
         # Skip lines where IP couldn't be extracted
         if ip is None:
@@ -134,7 +141,7 @@ def run_engine():
             # Debounce: Only send a global alert once every 60 seconds
             if current_time - last_global_alert_time > 60:
                 print(f"🌍 GLOBAL ANOMALY DETECTED! Rate: {global_rate}/s")
-                send_slack_alert("GLOBAL", global_rate, global_z, 0)
+                send_slack_alert("GLOBAL", global_rate, global_z, 0, "Global Traffic Spike")
                 last_global_alert_time = current_time
 
         # ---------------------------------------------------------
@@ -142,47 +149,39 @@ def run_engine():
         # ---------------------------------------------------------
         if is_anomaly:
             if ip in WHITELIST:
-                # Silently ignore whitelisted IPs to avoid log spam
                 continue
 
             current_time = time.time()
 
-            # ── Alert Fatigue Prevention ──
-            # If we already alerted for this IP within the cooldown window, skip entirely.
             if ip in banned_ip_cache and (current_time - banned_ip_cache[ip]) < ALERT_COOLDOWN_SEC:
                 continue
 
-            print(f"⚠️ IP ANOMALY DETECTED: {ip} | Rate: {rate} | Z-Score: {z_score:.2f}")
+            print(f"⚠️ IP ANOMALY DETECTED: {ip} | {condition}")
             
-            # HNG Requirement: Auto-Unban backoff schedule (10 min, 30 min, 2 hours)
-            try:
-                with open(AUDIT_LOG_PATH, "r") as f:
-                    ban_count = f.read().count(f"ACTION: {ip} | BAN")
-            except FileNotFoundError:
-                ban_count = 0
-            
-            if ban_count == 0:
-                new_duration = 10
-            elif ban_count == 1:
-                new_duration = 30
-            elif ban_count == 2:
-                new_duration = 120
+            # HNG Requirement: Auto-Unban backoff schedule
+            # Uses in-memory offense counter — survives unbans, loaded from audit log on restart
+            offense = offense_counts.get(ip, 0)
+            if offense >= len(BACKOFF_SCHEDULE):
+                new_duration = 999999  # permanent
+                duration_label = "PERMANENT"
             else:
-                new_duration = 999999 # Effectively permanent for repeat offenders
+                new_duration = BACKOFF_SCHEDULE[offense]
+                duration_label = f"{new_duration}m"
             
-            # Execute the Ban and Notify Slack (exactly ONCE per cooldown window)
             if ban_ip(ip, new_duration):
-                # 1. Mark this IP as recently alerted
+                # Increment offense count AFTER successful ban
+                offense_counts[ip] = offense + 1
                 banned_ip_cache[ip] = current_time
-
-                # 2. Add to the live banned set
                 with banned_lock:
                     currently_banned.add(ip)
 
-                # 3. Send exactly one Slack notification
-                send_slack_alert(ip, rate, z_score, new_duration)
+                # Format exact audit log as required: [timestamp] ACTION ip | condition | rate | baseline | duration
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                audit_entry = f"[{timestamp}] ACTION {ip} | {condition} | Rate: {rate} | Baseline: {detector.baseline_mean:.2f} | Duration: {duration_label} (offense #{offense + 1})\n"
+                with open(AUDIT_LOG_PATH, "a") as af:
+                    af.write(audit_entry)
 
-                # 4. Force UI update immediately so the ban shows up
+                send_slack_alert(ip, rate, z_score, new_duration, condition)
                 update_dashboard_stats(detector)
 
 if __name__ == "__main__":
