@@ -26,12 +26,14 @@ def ban_ip(ip, duration_min):
     """
     try:
         # 1. Execute the system command
-        # -I INPUT inserts the rule at the top of the chain
-        subprocess.run(['iptables', '-I', 'INPUT', '-s', ip, '-j', 'DROP'], check=True)
+        # -I DOCKER-USER inserts the rule at the top of the chain.
+        # This is CRITICAL for Docker environments because Docker traffic
+        # bypasses the standard 'INPUT' chain.
+        subprocess.run(['iptables', '-I', 'DOCKER-USER', '-s', ip, '-j', 'DROP'], check=True)
         
         # 2. Log the action for your Audit-log.png
         log_event(ip, "BAN", f"for {duration_min}m")
-        print(f"🚫 Successfully banned {ip} for {duration_min} minutes.")
+        print(f"🚫 Successfully banned {ip} for {duration_min} minutes (DOCKER-USER).")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ Failed to ban {ip}: {e}")
@@ -43,14 +45,14 @@ def unban_ip(ip):
     """
     try:
         # 1. Execute the system command
-        # -D INPUT deletes the specific rule
-        subprocess.run(['iptables', '-D', 'INPUT', '-s', ip, '-j', 'DROP'], check=True)
+        # -D DOCKER-USER deletes the specific rule
+        subprocess.run(['iptables', '-D', 'DOCKER-USER', '-s', ip, '-j', 'DROP'], check=True)
         
         # 2. Log the action
         log_event(ip, "UNBAN", "Duration expired")
-        print(f"🔓 Successfully unbanned {ip}.")
+        print(f"🔓 Successfully unbanned {ip} (DOCKER-USER).")
         return True
     except subprocess.CalledProcessError as e:
         # This often happens if the rule was already manually deleted
-        print(f"⚠️ Could not unban {ip} (Rule might not exist): {e}")
+        print(f"⚠️ Could not unban {ip} (Rule might not exist in DOCKER-USER): {e}")
         return False
