@@ -1,215 +1,289 @@
-import time
 import collections
-import statistics
-import os
-import yaml
 import datetime
 import json
+import os
+import statistics
+import time
 
-# --- LOAD CONFIGURATION ---
+import yaml
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+with open(os.path.join(BASE_DIR, "config.yaml"), "r") as f:
     conf = yaml.safe_load(f)
 
-AUDIT_LOG_PATH = conf['logging']['audit_log_path']
-Z_SCORE_LIMIT = conf['thresholds']['z_score_limit']
-RATE_MULTIPLIER = conf['thresholds']['rate_multiplier']
-MIN_RATE_LIMIT = conf['thresholds'].get('min_rate_limit', 2.0)
-BASELINE_STATE_PATH = os.path.join(BASE_DIR, 'baseline_data.json')
+AUDIT_LOG_PATH = conf["logging"]["audit_log_path"]
+Z_SCORE_LIMIT = conf["thresholds"]["z_score_limit"]
+RATE_MULTIPLIER = conf["thresholds"]["rate_multiplier"]
+MIN_RATE_LIMIT = conf["thresholds"].get("min_rate_limit", 2.0)
+BASELINE_STATE_PATH = os.path.join(BASE_DIR, "baseline_data.json")
+
+WINDOW_SECONDS = 60
+BASELINE_SECONDS = 30 * 60
+BASELINE_RECALC_SECONDS = 60
+CURRENT_HOUR_MIN_SAMPLES = 300
+MEAN_FLOOR = 0.1
+STDDEV_FLOOR = 0.05
+ERROR_RATE_FLOOR = 0.1
+
 
 class AnomalyDetector:
     def __init__(self):
-        self.history = collections.defaultdict(list)  # {timestamp: [ip1, ip2...]}
-        self.ip_counts = collections.defaultdict(lambda: collections.defaultdict(int)) # {timestamp: {ip: count}}
-        
-        # --- Error Tracking ---
-        self.ip_errors = collections.defaultdict(lambda: collections.defaultdict(int)) # {timestamp: {ip: error_count}}
-        self.global_errors = collections.defaultdict(int) # {timestamp: total_error_count}
-        
-        # --- Baseline Slots (Per-Hour) ---
-        # Stores RPS and Error-Rate data for each hour of the day (0-23)
-        self.hourly_rps = collections.defaultdict(list)   # {hour: [rps1, rps2...]}
-        self.hourly_errors = collections.defaultdict(list) # {hour: [err1, err2...]}
-        
-        self.baseline_mean = 0.0
-        self.baseline_stddev = 1.0
-        self.error_baseline_mean = 0.1 # Floor to avoid div by zero
-        
+        # Required 60s deque windows: one global, one per source IP.
+        self.global_window = collections.deque()
+        self.ip_windows = collections.defaultdict(collections.deque)
+        self.ip_error_windows = collections.defaultdict(collections.deque)
+
+        # Completed per-second slots used for the rolling 30-minute baseline.
+        self.baseline_counts = collections.deque(maxlen=BASELINE_SECONDS)
+        self.baseline_error_counts = collections.deque(maxlen=BASELINE_SECONDS)
+        self.hourly_rps = collections.defaultdict(list)
+        self.hourly_errors = collections.defaultdict(list)
+
+        self.current_second = None
+        self.current_second_count = 0
+        self.current_second_errors = 0
+
+        self.baseline_mean = MEAN_FLOOR
+        self.baseline_stddev = STDDEV_FLOOR
+        self.error_baseline_mean = ERROR_RATE_FLOOR
         self.last_recalc_time = time.time()
 
     def load_state(self):
-        """Restore persisted hourly baseline data from disk (crash recovery)."""
+        """Restore persisted baseline data from disk."""
         try:
-            if os.path.exists(BASELINE_STATE_PATH):
-                with open(BASELINE_STATE_PATH, 'r') as f:
-                    state = json.load(f)
-                for hour_str, values in state.get('hourly_rps', {}).items():
-                    self.hourly_rps[int(hour_str)] = values
-                for hour_str, values in state.get('hourly_errors', {}).items():
-                    self.hourly_errors[int(hour_str)] = values
-                # Immediately compute a baseline from the loaded data
-                self.calculate_baseline()
-                print(f"📊 Loaded baseline state: {len(self.hourly_rps)} hour slots, mean={self.baseline_mean:.2f}")
+            if not os.path.exists(BASELINE_STATE_PATH):
+                return
+            with open(BASELINE_STATE_PATH, "r") as f:
+                state = json.load(f)
+
+            self.baseline_counts = collections.deque(
+                state.get("baseline_counts", [])[-BASELINE_SECONDS:],
+                maxlen=BASELINE_SECONDS,
+            )
+            self.baseline_error_counts = collections.deque(
+                state.get("baseline_error_counts", [])[-BASELINE_SECONDS:],
+                maxlen=BASELINE_SECONDS,
+            )
+            for hour_str, values in state.get("hourly_rps", {}).items():
+                self.hourly_rps[int(hour_str)] = values[-3600:]
+            for hour_str, values in state.get("hourly_errors", {}).items():
+                self.hourly_errors[int(hour_str)] = values[-3600:]
+
+            self.calculate_baseline(write_audit=False)
+            print(
+                f"Loaded baseline state: {len(self.baseline_counts)} seconds, "
+                f"mean={self.baseline_mean:.2f}, stddev={self.baseline_stddev:.2f}"
+            )
         except Exception as e:
-            print(f"⚠️ Could not load baseline state: {e}")
+            print(f"Could not load baseline state: {e}")
 
     def save_state(self):
-        """Persist hourly baseline data to disk so restarts don't lose memory."""
+        """Persist rolling and hourly baseline data so restarts keep learning."""
         try:
             state = {
-                'hourly_rps': {str(k): v[-3600:] for k, v in self.hourly_rps.items() if v},
-                'hourly_errors': {str(k): v[-3600:] for k, v in self.hourly_errors.items() if v},
+                "baseline_counts": list(self.baseline_counts),
+                "baseline_error_counts": list(self.baseline_error_counts),
+                "hourly_rps": {
+                    str(k): v[-3600:] for k, v in self.hourly_rps.items() if v
+                },
+                "hourly_errors": {
+                    str(k): v[-3600:] for k, v in self.hourly_errors.items() if v
+                },
             }
-            with open(BASELINE_STATE_PATH, 'w') as f:
+            with open(BASELINE_STATE_PATH, "w") as f:
                 json.dump(state, f)
         except Exception as e:
-            print(f"⚠️ Could not save baseline state: {e}")
+            print(f"Could not save baseline state: {e}")
 
-    def log_baseline(self, hour):
-        """Writes baseline updates to the audit log."""
+    def log_baseline(self, condition):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = f"{timestamp} | ACTION: SYSTEM | DETAILS: baseline_recalc | Hour: {hour} | RPS Mean: {self.baseline_mean:.2f} | Err Mean: {self.error_baseline_mean:.2f}\n"
+        entry = (
+            f"[{timestamp}] ACTION SYSTEM | {condition} | "
+            f"Rate: {self.get_total_rps():.2f} | "
+            f"Baseline: mean={self.baseline_mean:.2f},stddev={self.baseline_stddev:.2f},"
+            f"error_mean={self.error_baseline_mean:.2f} | Duration: n/a\n"
+        )
         try:
             with open(AUDIT_LOG_PATH, "a") as f:
                 f.write(entry)
         except Exception as e:
-            print(f"⚠️ Could not write baseline to audit log: {e}")
+            print(f"Could not write baseline audit entry: {e}")
 
-    def calculate_baseline(self):
-        """Recalculates the mean and standard deviation using multi-hour data.
-        
-        Strategy:
-        1. Merge data from the CURRENT hour and PREVIOUS hour (two hourly slots).
-        2. If combined data has >= 2 samples, compute the baseline (fast warm-up).
-        3. If no hourly data at all, fall back to a global estimate from all hours.
-        This ensures the baseline is never stuck at 0.00 for long.
+    def _append_completed_second(self, second, count, error_count):
+        hour = datetime.datetime.fromtimestamp(second).hour
+        rps = float(count)
+        error_rate = float(error_count)
+
+        self.baseline_counts.append(rps)
+        self.baseline_error_counts.append(error_rate)
+        self.hourly_rps[hour].append(rps)
+        self.hourly_errors[hour].append(error_rate)
+        self.hourly_rps[hour] = self.hourly_rps[hour][-3600:]
+        self.hourly_errors[hour] = self.hourly_errors[hour][-3600:]
+
+    def _roll_second_slots(self, now_sec):
+        if self.current_second is None:
+            self.current_second = now_sec
+            return
+
+        while self.current_second < now_sec:
+            self._append_completed_second(
+                self.current_second,
+                self.current_second_count,
+                self.current_second_errors,
+            )
+            self.current_second += 1
+            self.current_second_count = 0
+            self.current_second_errors = 0
+
+    def _cleanup_windows(self, now):
+        cutoff = now - WINDOW_SECONDS
+        while self.global_window and self.global_window[0] < cutoff:
+            self.global_window.popleft()
+
+        for ip in list(self.ip_windows.keys()):
+            while self.ip_windows[ip] and self.ip_windows[ip][0] < cutoff:
+                self.ip_windows[ip].popleft()
+            if not self.ip_windows[ip]:
+                del self.ip_windows[ip]
+
+        for ip in list(self.ip_error_windows.keys()):
+            while self.ip_error_windows[ip] and self.ip_error_windows[ip][0] < cutoff:
+                self.ip_error_windows[ip].popleft()
+            if not self.ip_error_windows[ip]:
+                del self.ip_error_windows[ip]
+
+    def calculate_baseline(self, write_audit=True):
+        """Recalculate effective baseline from rolling 30m data every 60s.
+
+        If the current hour has at least five minutes of per-second samples, it
+        becomes the preferred baseline. Otherwise the rolling 30-minute window
+        is used.
         """
         current_hour = datetime.datetime.now().hour
-        prev_hour = (current_hour - 1) % 24
-        
-        # Merge current + previous hour data (multi-hour awareness)
-        rps_data = list(self.hourly_rps.get(current_hour, []))
-        err_data = list(self.hourly_errors.get(current_hour, []))
-        rps_data += self.hourly_rps.get(prev_hour, [])
-        err_data += self.hourly_errors.get(prev_hour, [])
-        
-        # Fallback: if current+prev hour have nothing, use ALL available hours
-        if len(rps_data) < 2:
-            for hour in range(24):
-                if hour != current_hour and hour != prev_hour:
-                    rps_data += self.hourly_rps.get(hour, [])
-                    err_data += self.hourly_errors.get(hour, [])
-        
-        # Fast warm-up: only need 2 samples to start (was 11 before)
-        if len(rps_data) >= 2:
-            self.baseline_mean = statistics.mean(rps_data)
-            self.baseline_stddev = statistics.stdev(rps_data) if len(rps_data) > 1 else 1.0
-            self.error_baseline_mean = max(statistics.mean(err_data), 0.1) if err_data else 0.1
-            self.log_baseline(current_hour)
-            
-            # Keep only the last hour of data per slot to keep it "rolling"
-            self.hourly_rps[current_hour] = self.hourly_rps[current_hour][-3600:]
-            self.hourly_errors[current_hour] = self.hourly_errors[current_hour][-3600:]
-        elif len(rps_data) == 1:
-            # Even a single sample is better than 0.00
-            self.baseline_mean = rps_data[0]
-            self.baseline_stddev = 1.0
+        current_hour_rps = self.hourly_rps.get(current_hour, [])
+        current_hour_errors = self.hourly_errors.get(current_hour, [])
 
-    def get_total_rps(self):
-        now = int(time.time())
-        total = sum(len(self.history.get(t, [])) for t in range(now - 5, now + 1))
-        return round(total / 5.0, 2)
+        if len(current_hour_rps) >= CURRENT_HOUR_MIN_SAMPLES:
+            rps_data = current_hour_rps[-3600:]
+            error_data = current_hour_errors[-3600:]
+            condition = f"baseline_recalc current_hour={current_hour}"
+        else:
+            rps_data = list(self.baseline_counts)
+            error_data = list(self.baseline_error_counts)
+            condition = "baseline_recalc rolling_30m"
 
-    def get_global_error_rate(self):
-        """Average global errors per second over last 5s."""
-        now = int(time.time())
-        total = sum(self.global_errors.get(t, 0) for t in range(now - 5, now + 1))
-        return round(total / 5.0, 2)
+        if rps_data:
+            mean = statistics.mean(rps_data)
+            stddev = statistics.stdev(rps_data) if len(rps_data) > 1 else STDDEV_FLOOR
+            self.baseline_mean = max(mean, MEAN_FLOOR)
+            self.baseline_stddev = max(stddev, STDDEV_FLOOR)
 
-    def get_top_ips(self, n=10):
-        now = int(time.time())
-        combined = collections.defaultdict(int)
-        for t in range(now - 10, now + 1):
-            for ip, count in self.ip_counts.get(t, {}).items():
-                combined[ip] += count
-        return sorted(combined.items(), key=lambda x: x[1], reverse=True)[:n]
+        if error_data:
+            self.error_baseline_mean = max(statistics.mean(error_data), ERROR_RATE_FLOOR)
 
-    def process_line(self, line):
-        """
-        Analyzes a single log line.
-        Supports 'Error Surge' detection and threshold tightening.
-        """
-        try:
-            line = line.strip()
-            if not line:
-                return False, None, 0, 0, "No data"
+        if write_audit:
+            self.log_baseline(condition)
 
-            status = 200
-            if line.startswith('{'):
-                log_data = json.loads(line)
-                ip = (log_data.get('source_ip') or log_data.get('remote_addr') or log_data.get('client_ip') or '').strip()
-                status = int(log_data.get('status', 200))
-            else:
-                parts = line.split()
-                if not parts: return False, None, 0, 0, "Parse error"
-                ip = parts[0].strip()
-                # Try to find status in common Nginx combined positions
-                if len(parts) > 8: status = int(parts[8])
-
-            if not ip or ip == '-': return False, None, 0, 0, "Invalid IP"
-        except Exception:
-            return False, None, 0, 0, "Parse error"
-
-        now = int(time.time())
-        self.history[now].append(ip)
-        self.ip_counts[now][ip] += 1
-        
-        # Track errors (4xx, 5xx)
-        if status >= 400:
-            self.ip_errors[now][ip] += 1
-            self.global_errors[now] += 1
-
-        # Periodically update hourly baseline (every 30s for faster warm-up)
-        if time.time() - self.last_recalc_time > 30:
-            current_hour = datetime.datetime.now().hour
-            self.hourly_rps[current_hour].append(self.get_total_rps())
-            self.hourly_errors[current_hour].append(self.get_global_error_rate())
+    def maybe_recalculate_baseline(self):
+        if time.time() - self.last_recalc_time >= BASELINE_RECALC_SECONDS:
             self.calculate_baseline()
             self.save_state()
             self.last_recalc_time = time.time()
 
-        # --- Detection Logic ---
-        ip_rate = self.ip_counts[now][ip]
-        ip_err_rate = self.ip_errors[now][ip]
-        
-        # 1. Error Surge Check
-        # If IP error rate is 3x baseline error rate, tighten thresholds
-        is_error_surge = (ip_err_rate > (self.error_baseline_mean * 3)) and (ip_err_rate > 2)
+    def get_total_rps(self):
+        return round(len(self.global_window) / WINDOW_SECONDS, 2)
+
+    def get_top_ips(self, n=10):
+        top = [(ip, len(window)) for ip, window in self.ip_windows.items()]
+        return sorted(top, key=lambda item: item[1], reverse=True)[:n]
+
+    def _parse_line(self, line):
+        line = line.strip()
+        if not line:
+            return None
+
+        if line.startswith("{"):
+            log_data = json.loads(line)
+            return {
+                "ip": (
+                    log_data.get("source_ip")
+                    or log_data.get("remote_addr")
+                    or log_data.get("client_ip")
+                    or ""
+                ).strip(),
+                "timestamp": log_data.get("timestamp"),
+                "method": log_data.get("method") or log_data.get("request_method"),
+                "path": log_data.get("path") or log_data.get("request_uri"),
+                "status": int(log_data.get("status", 200)),
+                "response_size": int(
+                    log_data.get("response_size") or log_data.get("body_bytes_sent") or 0
+                ),
+            }
+
+        parts = line.split()
+        if not parts:
+            return None
+        status = int(parts[8]) if len(parts) > 8 else 200
+        return {
+            "ip": parts[0].strip(),
+            "timestamp": None,
+            "method": parts[5].strip('"') if len(parts) > 5 else None,
+            "path": parts[6] if len(parts) > 6 else None,
+            "status": status,
+            "response_size": int(parts[9]) if len(parts) > 9 and parts[9].isdigit() else 0,
+        }
+
+    def process_line(self, line):
+        """Parse one Nginx log line and evaluate IP anomaly state."""
+        try:
+            event = self._parse_line(line)
+            if not event or not event["ip"] or event["ip"] == "-":
+                return False, None, 0, 0, "Invalid log line"
+        except Exception:
+            return False, None, 0, 0, "Parse error"
+
+        now = time.time()
+        now_sec = int(now)
+        ip = event["ip"]
+        status = event["status"]
+
+        self._roll_second_slots(now_sec)
+
+        self.global_window.append(now)
+        self.ip_windows[ip].append(now)
+        self.current_second_count += 1
+
+        if status >= 400:
+            self.ip_error_windows[ip].append(now)
+            self.current_second_errors += 1
+
+        self._cleanup_windows(now)
+        self.maybe_recalculate_baseline()
+
+        ip_rate = len(self.ip_windows[ip]) / WINDOW_SECONDS
+        ip_error_rate = len(self.ip_error_windows.get(ip, ())) / WINDOW_SECONDS
+        safe_stddev = self.baseline_stddev if self.baseline_stddev > 0 else STDDEV_FLOOR
+        z_score = (ip_rate - self.baseline_mean) / safe_stddev
+
+        is_error_surge = ip_error_rate > (self.error_baseline_mean * 3)
         effective_z_limit = Z_SCORE_LIMIT / 2.0 if is_error_surge else Z_SCORE_LIMIT
         effective_rate_multiplier = RATE_MULTIPLIER / 2.0 if is_error_surge else RATE_MULTIPLIER
 
-        # 2. Z-Score Anomaly
-        safe_stddev = self.baseline_stddev if self.baseline_stddev > 0 else 1.0
-        z_score = (ip_rate - self.baseline_mean) / safe_stddev
-
-        # Flag Condition
         condition = None
         if z_score > effective_z_limit:
-            condition = f"Z-Score ({z_score:.2f} > {effective_z_limit})"
-        elif ip_rate > (self.baseline_mean * effective_rate_multiplier) and self.baseline_mean > 0 and ip_rate > MIN_RATE_LIMIT:
-            condition = f"Rate Multiplier ({ip_rate} > {self.baseline_mean * effective_rate_multiplier:.1f}) & Rate > {MIN_RATE_LIMIT}"
-        
+            condition = f"Z-Score ({z_score:.2f} > {effective_z_limit:.2f})"
+        elif (
+            ip_rate > (self.baseline_mean * effective_rate_multiplier)
+            and ip_rate > MIN_RATE_LIMIT
+        ):
+            condition = (
+                f"Rate Multiplier ({ip_rate:.2f} > "
+                f"{self.baseline_mean * effective_rate_multiplier:.2f})"
+            )
+
         if is_error_surge and condition:
             condition = f"ERROR SURGE + {condition}"
 
-        is_anomaly = condition is not None
-
-        # Cleanup
-        old_keys = [t for t in self.history.keys() if t < now - 15]
-        for t in old_keys:
-            self.history.pop(t, None)
-            self.ip_counts.pop(t, None)
-            self.ip_errors.pop(t, None)
-            self.global_errors.pop(t, None)
-
-        return is_anomaly, ip, ip_rate, z_score, condition
+        return condition is not None, ip, round(ip_rate, 2), z_score, condition

@@ -1,30 +1,32 @@
-from collections import deque
-from datetime import datetime, timedelta
+from collections import defaultdict, deque
+
 
 class TrafficMonitor:
-    def __init__(self):
+    """Reusable 60-second deque monitor for global and per-IP traffic."""
+
+    def __init__(self, window_seconds=60):
+        self.window_seconds = window_seconds
         self.global_window = deque()
-        self.ip_windows = {} # Dictionary: { ip: deque() }
+        self.ip_windows = defaultdict(deque)
 
     def add_request(self, ip, timestamp):
-        now = timestamp
-        # 1. Add to Global
-        self.global_window.append(now)
-        # 2. Add to IP-specific
-        if ip not in self.ip_windows:
-            self.ip_windows[ip] = deque()
-        self.ip_windows[ip].append(now)
+        self.global_window.append(timestamp)
+        self.ip_windows[ip].append(timestamp)
+        self.cleanup(timestamp)
 
-        self._cleanup(now)
-
-    def _cleanup(self, now):
-        cutoff = now - timedelta(seconds=60)
-        # Clean global
+    def cleanup(self, now):
+        cutoff = now - self.window_seconds
         while self.global_window and self.global_window[0] < cutoff:
             self.global_window.popleft()
-        # Clean IPs
+
         for ip in list(self.ip_windows.keys()):
             while self.ip_windows[ip] and self.ip_windows[ip][0] < cutoff:
                 self.ip_windows[ip].popleft()
             if not self.ip_windows[ip]:
                 del self.ip_windows[ip]
+
+    def global_rps(self):
+        return len(self.global_window) / self.window_seconds
+
+    def ip_rps(self, ip):
+        return len(self.ip_windows.get(ip, ())) / self.window_seconds

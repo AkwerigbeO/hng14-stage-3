@@ -55,6 +55,7 @@ def stats():
             "banned_count": len(banned_list),
             "mean": round(metrics_data["mean"], 2),
             "stddev": round(metrics_data["stddev"], 2),
+            "uptime": str(timedelta(seconds=int(time.time() - metrics_data["start_time"]))),
         }
     return jsonify(snapshot)
 

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # --- THE BOUNCER (Anomaly Detector, Blocker, & Unbanner) ---
   detector:
@@ -12,7 +10,7 @@ services:
       - .env                      # 🔒 INJECTS YOUR SECRETS (Slack URL, Home IP)
     volumes:
       - HNG-nginx-logs:/var/log/nginx:ro    # Shared named volume (Read-Only)
-      - ./detector/audit.log:/app/audit.log # Persist ban/unban history (ensure WORKDIR is /app in your Dockerfile)
+      - ./detector/audit:/app/audit # Persist ban/unban history
       - ./detector/baseline_data.json:/app/baseline_data.json # Persist learned baseline across restarts
     environment:
       - PYTHONUNBUFFERED=1        # Forces real-time log output
@@ -38,6 +36,8 @@ services:
     image: kefaslungu/hng-nextcloud
     container_name: nextcloud
     restart: always
+    volumes:
+      - HNG-nginx-logs:/var/log/nginx:ro
 
 volumes:
   HNG-nginx-logs:

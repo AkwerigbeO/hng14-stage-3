@@ -1,35 +1,29 @@
-import os
-import json
-import requests
 import datetime
+import json
+import os
+
+import requests
+
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 
-def send_slack_alert(ip, rate, z_score, duration, condition="Anomaly Detected"):
-    """
-    Sends a formatted alert to Slack.
-    Includes: condition fired, current rate, baseline, timestamp, ban duration.
-    Gracefully skips if SLACK_WEBHOOK_URL is not configured.
-    """
+
+def send_slack_alert(ip, rate, z_score, duration, condition="Anomaly Detected", baseline=None):
+    """Send anomaly or global-spike notifications to Slack."""
     if not SLACK_WEBHOOK_URL:
-        print(f"⚠️ SLACK_WEBHOOK_URL not set — skipping alert for {ip}")
+        print(f"SLACK_WEBHOOK_URL not set; skipping alert for {ip}")
         return False
 
-    # Format duration for display
-    if duration >= 999999:
-        duration_display = "🔒 PERMANENT"
+    if duration is None:
+        duration_display = "Alert only"
+    elif duration >= 999999:
+        duration_display = "PERMANENT"
     else:
         duration_display = f"{duration} minutes"
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Use different formatting for global vs per-IP alerts
-    if ip == "GLOBAL":
-        title = "🌍 *Global Traffic Anomaly Detected!*"
-        color = "#ff6600"
-    else:
-        title = "🚨 *Anomaly Detected & IP Blocked!*"
-        color = "#ff0000"
+    title = "Global Traffic Anomaly Detected" if ip == "GLOBAL" else "Anomaly Detected and IP Blocked"
+    color = "#ff6600" if ip == "GLOBAL" else "#ff0000"
 
     payload = {
         "text": title,
@@ -39,52 +33,65 @@ def send_slack_alert(ip, rate, z_score, duration, condition="Anomaly Detected"):
                 "fields": [
                     {"title": "IP / Scope", "value": str(ip), "short": True},
                     {"title": "Condition", "value": str(condition), "short": True},
-                    {"title": "Request Rate", "value": f"{rate} req/s", "short": True},
+                    {"title": "Current Rate", "value": f"{rate} req/s", "short": True},
+                    {"title": "Baseline", "value": str(baseline or "n/a"), "short": True},
                     {"title": "Z-Score", "value": f"{z_score:.2f}", "short": True},
                     {"title": "Ban Duration", "value": duration_display, "short": True},
                     {"title": "Timestamp", "value": timestamp, "short": True},
                 ],
-                "footer": "HNG Stage 3 Anomaly Engine"
+                "footer": "HNG Stage 3 Anomaly Engine",
             }
-        ]
+        ],
     }
 
     try:
         response = requests.post(
-            SLACK_WEBHOOK_URL, 
+            SLACK_WEBHOOK_URL,
             data=json.dumps(payload),
-            headers={'Content-Type': 'application/json'},
-            timeout=10
+            headers={"Content-Type": "application/json"},
+            timeout=10,
         )
         if response.status_code == 200:
-            print(f"✅ Slack alert sent for {ip}")
+            print(f"Slack alert sent for {ip}")
         else:
-            print(f"⚠️ Slack returned status {response.status_code} for {ip}")
+            print(f"Slack returned status {response.status_code} for {ip}")
         return response.status_code == 200
     except Exception as e:
-        print(f"❌ Failed to send Slack alert: {e}")
+        print(f"Failed to send Slack alert: {e}")
         return False
 
-def send_unban_notification(ip):
-    """
-    Sends a notification to Slack when an IP is unbanned.
-    """
+
+def send_unban_notification(ip, baseline=None):
+    """Send a notification to Slack when an IP is unbanned."""
     if not SLACK_WEBHOOK_URL:
         return False
 
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     payload = {
-        "text": f"🔓 *IP Unbanned:* `{ip}`",
+        "text": f"IP Unbanned: {ip}",
         "attachments": [
             {
                 "color": "#34d399",
-                "text": f"The ban duration for {ip} has expired and the IP has been removed from iptables.",
-                "footer": "HNG Stage 3 Anomaly Engine"
+                "fields": [
+                    {"title": "IP", "value": str(ip), "short": True},
+                    {"title": "Condition", "value": "Auto-unban", "short": True},
+                    {"title": "Current Rate", "value": "n/a", "short": True},
+                    {"title": "Baseline", "value": str(baseline or "n/a"), "short": True},
+                    {"title": "Ban Duration", "value": "Expired", "short": True},
+                    {"title": "Timestamp", "value": timestamp, "short": True},
+                ],
+                "footer": "HNG Stage 3 Anomaly Engine",
             }
-        ]
+        ],
     }
 
     try:
-        requests.post(SLACK_WEBHOOK_URL, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=10)
-        return True
+        response = requests.post(
+            SLACK_WEBHOOK_URL,
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        return response.status_code == 200
     except Exception:
         return False

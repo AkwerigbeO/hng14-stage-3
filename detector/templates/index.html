@@ -544,6 +544,15 @@
                 <div class="metric-value red" id="banned_count">0</div>
                 <div class="metric-footer">Currently blocked</div>
             </div>
+
+            <div class="card metric-card" id="uptime-card">
+                <div class="metric-header">
+                    <span class="metric-label">Uptime</span>
+                    <div class="metric-icon green">UP</div>
+                </div>
+                <div class="metric-value green" id="uptime">0:00:00</div>
+                <div class="metric-footer">Detector runtime</div>
+            </div>
         </div>
         <div class="card" style="margin-bottom: 24px;">
             <div class="panel-title">
@@ -670,6 +679,7 @@
                     document.getElementById('stddev').innerText = (typeof stddev === 'number') ? stddev.toFixed(2) : '0.00';
 
                     document.getElementById('banned_count').innerText = data.banned_count ?? 0;
+                    document.getElementById('uptime').innerText = data.uptime ?? '0:00:00';
 
                     // ── Update Live Traffic vs Baseline chart ──
                     var now = new Date();

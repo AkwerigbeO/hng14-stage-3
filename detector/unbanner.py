@@ -1,24 +1,67 @@
-import time
-import os
-import yaml
 import datetime
-import sys
-from blocker import unban_ip
-from notifier import send_unban_notification
-import dashboard
-from dashboard import metrics_lock, currently_banned, banned_lock
+import os
+import time
 
-# --- LOAD CONFIGURATION ---
+import yaml
+
+import dashboard
+from blocker import unban_ip
+from dashboard import banned_lock, currently_banned, metrics_lock
+from notifier import send_unban_notification
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
+with open(os.path.join(BASE_DIR, "config.yaml"), "r") as f:
     conf = yaml.safe_load(f)
 
-AUDIT_LOG_PATH = conf['logging']['audit_log_path']
+AUDIT_LOG_PATH = conf["logging"]["audit_log_path"]
+PERMANENT_BAN_MINUTES = conf["security"]["permanent_ban_minutes"]
+
+
+def _parse_duration_minutes(duration_part):
+    duration_value = duration_part.replace("Duration:", "").strip()
+    if duration_value.upper().startswith("PERMANENT"):
+        return PERMANENT_BAN_MINUTES
+    if duration_value.endswith("m"):
+        duration_value = duration_value[:-1]
+    return int(duration_value)
+
+
+def _parse_audit_line(line):
+    parts = line.strip().split(" | ")
+    if len(parts) < 6 or "ACTION " not in parts[0]:
+        return None
+
+    timestamp_str = parts[0].split("]", 1)[0].strip("[")
+    ip = parts[0].split("ACTION ", 1)[1].strip()
+    action = parts[1].strip().upper()
+
+    try:
+        timestamp = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+    return {
+        "timestamp": timestamp,
+        "ip": ip,
+        "action": action,
+        "duration": _parse_duration_minutes(parts[5]) if action == "BAN" else None,
+    }
+
+
+def _write_unban_audit(ip):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = (
+        f"[{timestamp}] ACTION {ip} | UNBAN | condition=ban_expired | "
+        "Rate: n/a | Baseline: n/a | Duration: expired\n"
+    )
+    with open(AUDIT_LOG_PATH, "a") as f:
+        f.write(entry)
 
 
 def run_unbanner():
-    print("🔓 Unbanner service started. Monitoring for expirations...")
-    
+    print("Unbanner service started. Monitoring for expirations...")
+
     while True:
         try:
             if not os.path.exists(AUDIT_LOG_PATH):
@@ -26,69 +69,41 @@ def run_unbanner():
                 continue
 
             current_time = datetime.datetime.now()
-            
-            # This dict will store only the LATEST state for each IP
-            # Format: { "ip": unban_datetime_obj }
-            # If an IP is permanent or already unbanned, it won't be in here.
             pending_unbans = {}
 
-            with open(AUDIT_LOG_PATH, 'r') as f:
+            with open(AUDIT_LOG_PATH, "r") as f:
                 for line in f:
-                    if not line.strip() or " | " not in line:
-                        continue
-                    
-                    parts = line.strip().split(" | ")
-                    if len(parts) < 3:
-                        continue
-                    
-                    timestamp_str = parts[0].strip("[] ")
-                    action_part = parts[1].replace("ACTION: ", "").strip()
-                    details_part = parts[2].replace("DETAILS: ", "").strip()
-                    ip = action_part
-
-                    try:
-                        if "BAN" in details_part and "for " in details_part:
-                            duration_str = details_part.split("for ")[1].split("m")[0]
-                            duration_min = int(duration_str)
-
-                            # If it's a permanent ban (999999), ensure it's NOT in unban queue
-                            if duration_min >= 999999:
-                                if ip in pending_unbans:
-                                    del pending_unbans[ip]
-                                continue
-
-                            ban_time = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
-                            unban_at = ban_time + datetime.timedelta(minutes=duration_min)
-                            
-                            # Overwrite with newest entry found in log
-                            pending_unbans[ip] = unban_at
-                        
-                        elif "UNBAN" in details_part:
-                            # If we see an UNBAN, the IP is no longer a candidate for auto-unbanning
-                            if ip in pending_unbans:
-                                del pending_unbans[ip]
-
-                    except (IndexError, ValueError):
+                    event = _parse_audit_line(line)
+                    if not event:
                         continue
 
-            # ─── Execute Expirations ───
+                    ip = event["ip"]
+                    if event["action"] == "BAN":
+                        if event["duration"] >= PERMANENT_BAN_MINUTES:
+                            pending_unbans.pop(ip, None)
+                            continue
+                        pending_unbans[ip] = event["timestamp"] + datetime.timedelta(
+                            minutes=event["duration"]
+                        )
+                    elif event["action"] == "UNBAN":
+                        pending_unbans.pop(ip, None)
+
             for ip, unban_time in pending_unbans.items():
-                if current_time >= unban_time:
-                    if unban_ip(ip):
-                        print(f"✅ Auto-Unbanned {ip} (Duration {unban_time} expired)")
-                        send_unban_notification(ip)
+                if current_time >= unban_time and unban_ip(ip):
+                    print(f"Auto-unbanned {ip}")
+                    _write_unban_audit(ip)
+                    send_unban_notification(ip)
 
-                        # Sync with UI — update BOTH the in-memory set AND the dashboard dict
-                        with banned_lock:
-                            currently_banned.discard(ip)
-                        # Push updated list to dashboard so the API serves fresh data immediately
-                        with metrics_lock:
-                            dashboard.metrics_data["banned_ips"] = list(currently_banned)
-                                
+                    with banned_lock:
+                        currently_banned.discard(ip)
+                    with metrics_lock:
+                        dashboard.metrics_data["banned_ips"] = list(currently_banned)
+
         except Exception as e:
-            print(f"❌ Unbanner Error: {e}")
+            print(f"Unbanner error: {e}")
 
         time.sleep(15)
+
 
 if __name__ == "__main__":
     run_unbanner()
