@@ -14,6 +14,7 @@ with open(os.path.join(BASE_DIR, 'config.yaml'), 'r') as f:
 AUDIT_LOG_PATH = conf['logging']['audit_log_path']
 Z_SCORE_LIMIT = conf['thresholds']['z_score_limit']
 RATE_MULTIPLIER = conf['thresholds']['rate_multiplier']
+MIN_RATE_LIMIT = conf['thresholds'].get('min_rate_limit', 2.0)
 BASELINE_STATE_PATH = os.path.join(BASE_DIR, 'baseline_data.json')
 
 class AnomalyDetector:
@@ -195,8 +196,8 @@ class AnomalyDetector:
         condition = None
         if z_score > effective_z_limit:
             condition = f"Z-Score ({z_score:.2f} > {effective_z_limit})"
-        elif ip_rate > (self.baseline_mean * effective_rate_multiplier) and self.baseline_mean > 0:
-            condition = f"Rate Multiplier ({ip_rate} > {self.baseline_mean * effective_rate_multiplier:.1f})"
+        elif ip_rate > (self.baseline_mean * effective_rate_multiplier) and self.baseline_mean > 0 and ip_rate > MIN_RATE_LIMIT:
+            condition = f"Rate Multiplier ({ip_rate} > {self.baseline_mean * effective_rate_multiplier:.1f}) & Rate > {MIN_RATE_LIMIT}"
         
         if is_error_surge and condition:
             condition = f"ERROR SURGE + {condition}"

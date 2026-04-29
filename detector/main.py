@@ -131,8 +131,8 @@ def run_engine():
         safe_stddev = detector.baseline_stddev if detector.baseline_stddev > 0 else 1.0
         global_z = (global_rate - detector.baseline_mean) / safe_stddev
         
-        # Flag if Z-score > 3.0 OR rate is 5x the mean (only if baseline is established)
-        if (global_z > 3.0 or global_rate > (5 * detector.baseline_mean)) and detector.baseline_mean > 0:
+        # Flag if Z-score > 3.0 OR rate exceeds multiplier (only if baseline is established)
+        if (global_z > 3.0 or global_rate > (conf['thresholds']['rate_multiplier'] * detector.baseline_mean)) and detector.baseline_mean > 0:
             current_time = time.time()
             # Debounce: Only send a global alert once every 60 seconds
             if current_time - last_global_alert_time > 60:
