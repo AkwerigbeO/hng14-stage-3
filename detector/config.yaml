@@ -6,5 +6,5 @@ security:
   permanent_ban_minutes: 999999     # 4th+ offense = effectively permanent
 thresholds:
   z_score_limit: 3.0
-  rate_multiplier: 10
+  rate_multiplier: 5
   min_rate_limit: 3.0
